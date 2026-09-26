@@ -104,11 +104,14 @@ Verified on 2026-09-26 in a Linux sandbox with the official `Godot_v4.7.2-stable
 - ✅ Android SDK setup (`platform-tools`, `build-tools;35.0.1`, `cmdline-tools;latest`) + JDK 17 + debug keystore + editor settings.
 - ✅ **Real debug APK exported** from the template (`arm64-v8a`, ~27 MiB, `com.example.tapdodge`, signed with the debug key).
 - ✅ 110 unit/integration tests pass (`python3 -m unittest discover -s tests`).
+- ✅ `ci.yml` passed on a clean GitHub-hosted Ubuntu runner (PR #1): installer downloaded + checksum-verified the
+  pinned editor, `doctor` ran, the template was scaffolded and verified with the real engine.
 
 Not yet verified (implemented, but no evidence of success — treat as untested):
 
 - ❌ Live model calls to `claude-fable-5-1` / OpenAI-compatible servers (request shapes are unit-tested against the docs only).
-- ❌ GitHub tools against a real token; GitHub Actions workflow runs; Docker image build (no Docker in the sandbox).
+- ❌ GitHub *tools* against a real token (`github_create_repo`/`push`/`build_apk`); the `build-android.yml` workflow
+  has not been run yet; Docker image build (no Docker in the sandbox).
 - ❌ Release-signed APK / AAB, Gradle builds (needs NDK + CMake + Android build template), Play Store compliance.
 - ❌ Behaviour on a physical Android device (touch feel, performance, audio).
 
