@@ -86,6 +86,65 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("pull_request", t)
 
 
+def _run_block_lines(text: str):
+    """Yield the lines inside every ``run: |`` block of a workflow file."""
+    in_run = False
+    for line in text.splitlines():
+        if re.match(r"\s+run:\s*\|", line):
+            in_run = True
+            continue
+        if in_run and re.match(r"\s+- (name|uses):", line):
+            in_run = False
+        if in_run:
+            yield line
+
+
+class CloudflareProvisionWorkflowTests(unittest.TestCase):
+    """The manual provisioning workflow must stay manual, environment-gated and unable to leak a token."""
+
+    PATH = REPO / ".github" / "workflows" / "cloudflare-provision.yml"
+
+    def setUp(self):
+        self.text = self.PATH.read_text(encoding="utf-8")
+        self.code = "\n".join(l for l in self.text.splitlines() if not l.strip().startswith("#"))
+
+    def test_manual_only_and_environment_gated(self):
+        m = re.search(r"(?ms)^on:\n(.*?)^[a-z]", self.code)
+        triggers = re.findall(r"(?m)^  ([a-z_]+):", m.group(1))
+        self.assertEqual(triggers, ["workflow_dispatch"], "nothing may run on push / pull_request / schedule")
+        self.assertIn("environment: cloudflare", self.code, "secrets live in a protected environment (reviewers, main only)")
+        self.assertRegex(self.code, r"permissions:\n  contents: read")
+        self.assertRegex(self.code, r"dry_run:\n(?:.*\n)*?\s+default: true", "a careless click only prints the plan")
+        self.assertIn("if: ${{ !inputs.dry_run }}", self.code)
+
+    def test_token_never_stored_echoed_or_uploaded(self):
+        self.assertIn("--discard-tunnel-token", self.code, "the runner keeps no copy of the tunnel connector token")
+        self.assertNotIn("--write-env", self.code)
+        self.assertNotIn("upload-artifact", self.code, "a public repository's artifacts are public")
+        self.assertNotRegex(self.code, r"echo .*secrets\.", "never echo secrets")
+        self.assertNotRegex(self.code, r"echo .*CLOUDFLARE_API_TOKEN}", "never echo the token variable")
+        self.assertIn("CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}", self.code, "secret → env: only")
+        # the token is scoped to the live step, not the whole job
+        job_env = re.search(r"(?ms)^    env:\n(.*?)^    steps:", self.code).group(1)
+        self.assertNotIn("CLOUDFLARE_API_TOKEN", job_env)
+        self.assertNotIn("TUNNEL_TOKEN", job_env)
+        self.assertIn("::add-mask::", self.code, "allowed e-mails are masked before the script prints them")
+
+    def test_inputs_are_not_interpolated_into_shell(self):
+        for line in _run_block_lines(self.text):
+            self.assertNotIn("${{", line, line)
+
+    def test_uses_the_offline_tested_script_and_documents_the_rotation_rule(self):
+        self.assertIn('python3 -m unittest discover -s tests -p "test_cloudflare_setup.py"', self.code)
+        self.assertIn("python3 scripts/cloudflare_setup.py --dry-run", self.code)
+        self.assertIn("--facts-json", self.code)
+        for perm in ("Access: Apps and Policies: Edit", "Cloudflare Tunnel: Edit", "DNS: Edit"):
+            self.assertIn(perm, self.text, perm)
+        self.assertIn("rolled or deleted first", self.text)
+        self.assertIn("Networking → Tunnels", self.text)
+        self.assertIn("does not deploy", self.text)
+
+
 class DockerfileTests(unittest.TestCase):
     def test_copied_paths_exist(self):
         t = DOCKERFILE.read_text(encoding="utf-8")

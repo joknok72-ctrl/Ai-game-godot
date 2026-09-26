@@ -40,7 +40,7 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "bearer_token": re.compile(r"\bBearer\s+([A-Za-z0-9_\-\.=/+]{24,})"),
     # NAME = value  for the variable names this project documents
     "assigned_secret": re.compile(
-        r"\b((?:KAGGLE_API_TOKEN|KAGGLE_KEY|CLOUDFLARE_API_TOKEN|CF_API_TOKEN|CF_AIG_TOKEN|ANTHROPIC_API_KEY|"
+        r"\b((?:KAGGLE_API_TOKEN|KAGGLE_KEY|CLOUDFLARE_API_TOKEN|CF_API_TOKEN|CF_AIG_TOKEN|CF_WORKERS_AI_TOKEN|ANTHROPIC_API_KEY|"
         r"OPENAI_API_KEY|GITHUB_TOKEN|HF_TOKEN|GODOT_ANDROID_KEYSTORE_(?:DEBUG|RELEASE)_PASSWORD|"
         r"TUNNEL_TOKEN|CF_TUNNEL_TOKEN|CLOUDFLARE_TUNNEL_TOKEN|GODOTAI_CHAT_TOKEN)"
         r"\b\s*[:=]\s*[\"']?)([^\s\"'<>${}]{12,})", re.I),

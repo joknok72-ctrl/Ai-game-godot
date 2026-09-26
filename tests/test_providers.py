@@ -282,10 +282,18 @@ class CloudflareRoutingTests(unittest.TestCase):
             self.assertEqual(cloudflare.gateway_headers(), {}, "unauthenticated gateway → no extra header")
             with self.assertRaises(cloudflare.CloudflareRouteError):
                 cloudflare.gateway_base_url("openai")
-            with self.assertRaises(cloudflare.CloudflareRouteError):
-                cloudflare.workers_ai_api_key()
+            with mock.patch.dict(os.environ, {"CF_WORKERS_AI_TOKEN": ""}):
+                with self.assertRaises(cloudflare.CloudflareRouteError) as cm:
+                    cloudflare.workers_ai_api_key()
+                self.assertIn("CF_WORKERS_AI_TOKEN is not set", str(cm.exception))
         with mock.patch.dict(os.environ, {**self.ENV, "CF_AIG_TOKEN": "gw-secret"}):
             self.assertEqual(cloudflare.gateway_headers(), {"cf-aig-authorization": "Bearer gw-secret"})
+
+    def test_workers_ai_token_prefers_the_dedicated_name(self):
+        with mock.patch.dict(os.environ, {"CF_WORKERS_AI_TOKEN": " wai-only-token ", "CLOUDFLARE_API_TOKEN": "setup-token"}):
+            self.assertEqual(cloudflare.workers_ai_api_key(), "wai-only-token", "the narrow token wins; whitespace is stripped")
+        with mock.patch.dict(os.environ, {"CF_WORKERS_AI_TOKEN": "", "CLOUDFLARE_API_TOKEN": "legacy-token"}):
+            self.assertEqual(cloudflare.workers_ai_api_key(), "legacy-token", "legacy name still works")
 
     def test_missing_env_gives_clear_error(self):
         with mock.patch.dict(os.environ, {"CF_ACCOUNT_ID": "", "CF_AIG_GATEWAY": ""}):

@@ -206,6 +206,108 @@ customers from using our services to train or develop AI models without our writ
 - **Status:** private default, identity disclosure, endpoint probe and `eval compare` are unit-tested offline; **no live
   model call and no training run** have been made from this repository.
 
+### 4.3 Deployment options and limits re-checked for the week of 2026-09-26 (added 2026-09-26)
+
+Sources (all read 2026-09-26; "Last updated" dates as shown on the pages):
+https://developers.cloudflare.com/tunnel/get-started/ (Sep 11, 2026),
+https://developers.cloudflare.com/tunnel/platform/changelog/ (Sep 11, 2026),
+https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/ (Apr 20, 2026),
+https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/origin-parameters/ ,
+https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/ (May 6, 2026),
+https://developers.cloudflare.com/workers/configuration/cloudflare-access/ (Aug 18, 2026),
+https://developers.cloudflare.com/fundamentals/api/how-to/roll-token/ (Apr 20, 2026),
+https://developers.cloudflare.com/fundamentals/api/reference/permissions/ (Sep 16, 2026),
+https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-524/ (Jul 23, 2026),
+https://developers.cloudflare.com/waf/rate-limiting-rules/ (Aug 25, 2026),
+https://developers.cloudflare.com/ai-gateway/features/rate-limiting/ (Jun 5, 2026),
+https://developers.cloudflare.com/ai-gateway/features/spend-limits/ (Sep 9, 2026),
+https://developers.cloudflare.com/ai-gateway/usage/providers/workersai/ (Sep 17, 2026),
+https://developers.cloudflare.com/workers-ai/platform/limits/ (Sep 17, 2026),
+https://developers.cloudflare.com/workers-ai/platform/pricing/ (Sep 17, 2026),
+https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/ (Sep 18, 2026),
+https://developers.cloudflare.com/workers-ai/features/fine-tunes/ (Apr 21, 2026),
+https://developers.cloudflare.com/workers-ai/models/glm-5.3-flash/ ,
+https://developers.cloudflare.com/changelog/post/2026-04-13-containers-sandbox-ga/ ,
+https://developers.cloudflare.com/containers/platform/limits/ (Aug 28, 2026),
+https://developers.cloudflare.com/containers/platform/pricing/ (Aug 28, 2026).
+Raw copies of the pages are kept outside the repository (they are large); the numbers below are quoted from them.
+
+**What "publish it as a public website with the Cloudflare API" needs — and what Cloudflare does not provide**
+
+- **[verified]** A *named* Tunnel with a public hostname needs a **zone (domain) on Cloudflare** and DNS in it; the
+  token needs account-scoped *Cloudflare Tunnel* Edit/Write and zone-scoped *DNS* Edit/Write, plus *Access: Apps and
+  Policies* Edit/Write for the Access application. The current tunnel docs point to **Networking → Tunnels** in the dashboard
+  (older guides say Zero Trust → Networks → Tunnels). The permissions reference lists both "Edit" and "Write" spellings
+  (e.g. *Cloudflare Tunnel Edit* / *Cloudflare Tunnel Write*, *DNS Edit* / *DNS Write*) — the docs use them for the same grant.
+- **[verified]** The tunnel only *connects to a machine you already run*. Cloudflare Tunnel/Access do not host the chat or
+  the model. A persistent Linux host (with a GPU for `gpu-*`) or the Workers AI route is a hard prerequisite.
+- **[verified]** **Quick Tunnels** (`cloudflared tunnel --url …`, `*.trycloudflare.com`) need no account, zone or DNS, but
+  are documented for *testing and development*: no uptime guarantee, hard limit of **200 in-flight requests** (then `429`),
+  random hostname that disappears when the process exits, and no Access in front. → Documented as "temporary", never as
+  the public site.
+- **[verified]** Rolling an API token: My Profile → API Tokens → ⋯ → **Roll** → Confirm; the old value stops working, the
+  permissions stay. A token pasted into a chat is treated as leaked regardless of use (SECURITY.md).
+- **[verified]** `GET /user/tokens/verify` reports the token status (`active`); `cloudflare_setup.py` calls it read-only
+  before any write. **[assumption]** It does not prove the token *has* the three permissions — a missing one surfaces as
+  an authentication error on the first affected call (the script stops there).
+- **[verified]** Access JWTs: validate `Cf-Access-Jwt-Assertion` (header preferred) against `/cdn-cgi/access/certs`,
+  check the AUD tag; the signing key **rotates every 6 weeks** and the previous key stays valid **7 days** — the JWKS
+  carries both. `godotai/chat/access.py` reloads on an unknown `kid` (matches).
+- **[verified]** Access can now protect Workers hostnames (`workers.dev`, custom domains, routes) — a Workers-native front
+  end would not need a custom domain, but this project's chat is a Python server, so that only matters for option C.
+
+**Origin timeouts and streaming**
+
+- **[verified]** The default proxy read timeout behind Cloudflare is **125 seconds** (error 524) — not the 100 s quoted in
+  older material; the proxy write timeout is 30 s. The chat's SSE stream sends headers immediately and a `: keepalive`
+  comment every 15 s (`godotai/chat/server.py`), so long model runs do not hit it. **[known gap]** the synchronous
+  `POST /api/sessions/<id>/verify` (engine run) can exceed 125 s on a slow origin; making it asynchronous is future work.
+
+**Cost / abuse controls available this week**
+
+- **[verified]** WAF rate limiting on the Free plan: **1 rule**, counting by **IP** only, **10 s** counting period and
+  10 s mitigation, expression fields limited to path / verified bot. Useful as a coarse brake on `/api/`, useless for
+  per-user fairness — hence the in-server quota (`godotai/chat/quota.py`: concurrency + rolling 24 h per Access identity).
+- **[verified]** AI Gateway: request rate limits with fixed or sliding windows (→ `429`), and **spend limits** in dollars
+  (page dated Sep 9, 2026; up to **20 rules per gateway**; enforcement is *eventually consistent*, so a burst can briefly
+  exceed the budget). Workers AI through the gateway needs the `cf-aig-gateway-id` header (or the gateway URL) —
+  `godotai/providers/cloudflare.py` currently calls Workers AI *directly*; gateway routing for Workers AI is not wired.
+
+**Workers AI as the "no GPU at home" model host (option B)**
+
+- **[verified]** Free allocation **10,000 Neurons/day**; on Workers Paid **$0.011 per 1,000 Neurons** beyond it.
+- **[verified]** Rate limits: text generation **300 requests/min** by default; models that *require Workers Paid* get
+  **20 requests/min** per account per model on standard billing, **50/min** with prepaid AI Gateway credits ("designed
+  for typical agentic and coding workloads").
+- **[verified]** OpenAI-compatible endpoint `https://api.cloudflare.com/client/v4/accounts/<account>/ai/v1/chat/completions`
+  with a Bearer API token; the Responses API is limited to a few `gpt-oss` models, non-streaming. Fine-tuned inference
+  with uploaded LoRA adapters exists for *some* base models — compatibility with this project's Qwen2.5-Coder adapter is
+  **not** established.
+- **[verified]** Example candidate on the catalog: `@cf/zai-org/glm-5.3-flash` — function calling, streaming, ~1.3 M
+  context, $0.15 / M input, $0.50 / M output, $0.03 / M cached input; its page claims it "approach[es] Claude Opus 4.8 on
+  coding and agentic benchmarks" — **[vendor claim, not our evidence]**. Whether any of these drives this agent's tool loop
+  is measured by `eval compare`, never assumed.
+- **Decision:** wired as `GODOTAI_ROUTE=workers_ai` + `CF_WORKERS_AI_TOKEN` (a *Workers AI Read*-only token; a different
+  name from the setup token on purpose) in `deploy/cloudflare/compose.yml`, labelled *managed* in the identity card.
+  No live request was made.
+
+**Cloudflare Containers as a host for the chat (option C — not implemented)**
+
+- **[verified]** Containers reached **general availability on 2026-04-13**. Instance types up to **4 vCPU / 12 GiB / 20 GB**
+  (`standard-4`), custom types possible; billed under Workers Paid (**$5/month** with included usage, then per active
+  vCPU-second / GiB-second / GB-month). **No GPU** — the model would still have to be Workers AI or an external server.
+- **[assumption]** This project's image (Godot editor + export templates + JDK 17 + Android SDK) is several GB and the
+  headless engine verification is CPU/memory heavy; feasibility on a `standard-*` instance is untested. Documented as an
+  option, not built.
+
+**What was *not* changed on the strength of this research**
+
+- The default base model stays `Qwen/Qwen2.5-Coder-7B-Instruct`: newer coder models (Qwen3-Coder MoE, GLM-5.x, gpt-oss)
+  come with open vLLM tool-parser issues and LoRA/MoE caveats; switching without an `eval compare` run would be a promise,
+  not an improvement.
+- Nothing was deployed; no Cloudflare API request was made; the user's pasted token was neither used nor stored, and
+  must be rolled.
+
 ## 5. Kaggle — a batch GPU, not a server
 
 Sources (read 2026-09-26): https://www.kaggle.com/docs/notebooks , https://www.kaggle.com/docs/tpu ,

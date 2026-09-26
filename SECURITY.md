@@ -11,8 +11,8 @@ reads a token from the environment of *your* terminal only). Rotate both immedia
 
 | Credential | Where to revoke / re-create | Notes |
 | --- | --- | --- |
-| Cloudflare API token | dash.cloudflare.com → My Profile → **API Tokens** → *Roll* or *Delete* | Re-create with the **least privilege** the task needs — for the website setup: *Account → Access: Apps and Policies: Edit*, *Account → Cloudflare Tunnel: Edit*, *Zone → DNS: Edit* (that zone only); for AI Gateway / Workers AI: their `Run`/`Read` permission — and set an optional **TTL** and client-IP filter — both are documented options on the token creation screen ([docs](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/), read 2026-09-26). The setup token is needed once; delete it afterwards. |
-| Cloudflare **Tunnel token** (`TUNNEL_TOKEN`) | Zero Trust → Networks → Tunnels → your tunnel → *Refresh token* (or delete and re-create the tunnel) | Written by `cloudflare_setup.py` only into `deploy/cloudflare/.env` (mode 0600, git-ignored), never printed. Whoever holds it can attach a connector to your hostname. |
+| Cloudflare API token | dash.cloudflare.com → My Profile → **API Tokens** → the ⋯ menu next to the token → **Roll** → *Confirm* (invalidates the old value, keeps the permissions, shows a new value once) — or *Delete* | Re-create with the **least privilege** the task needs — for the website setup: *Account → Access: Apps and Policies: Edit*, *Account → Cloudflare Tunnel: Edit*, *Zone → DNS: Edit* (that zone only); for Workers AI at run time a *separate* token with only *Account → Workers AI: Read* (`CF_WORKERS_AI_TOKEN`) — and set an optional **TTL** and client-IP filter — both are documented options on the token creation screen ([docs](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/), [roll](https://developers.cloudflare.com/fundamentals/api/get-started/roll-token/), read 2026-09-26). The setup token is needed once; delete it afterwards. `scripts/cloudflare_setup.py` calls the read-only `GET /user/tokens/verify` first, so a rolled/expired token fails before anything is touched. |
+| Cloudflare **Tunnel token** (`TUNNEL_TOKEN`) | dashboard → **Networking → Tunnels** (older UI: Zero Trust → Networks → Tunnels) → your tunnel → *Refresh token* (or delete and re-create the tunnel) | Written by `cloudflare_setup.py` only into `deploy/cloudflare/.env` (mode 0600, git-ignored), never printed; the GitHub Actions provisioning workflow discards it (`--discard-tunnel-token`) because a public repository's logs and artifacts are public. Whoever holds it can attach a connector to your hostname. |
 | Kaggle API token | kaggle.com → Settings → **API** → revoke the token, create a new one | Kaggle documents API tokens for "automated scripts, notebook workflows, CI/CD environments" ([docs](https://www.kaggle.com/docs/api#auth), read 2026-09-26). |
 | Anthropic / OpenAI / GitHub keys | the respective console | Same rule: chat = leaked. |
 
@@ -24,7 +24,7 @@ the environment (`CF_ACCOUNT_ID`) so that forks work unchanged.
 
 * **Environment variables only.** Every credential is read by *name* at run time
   — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GITHUB_TOKEN`, `CF_AIG_TOKEN`,
-  `CLOUDFLARE_API_TOKEN`, `TUNNEL_TOKEN`, `GODOTAI_CHAT_TOKEN`, `KAGGLE_API_TOKEN`,
+  `CLOUDFLARE_API_TOKEN`, `CF_WORKERS_AI_TOKEN`, `TUNNEL_TOKEN`, `GODOTAI_CHAT_TOKEN`, `KAGGLE_API_TOKEN`,
   `HF_TOKEN`, `GODOT_ANDROID_KEYSTORE_RELEASE_*`.
   No value is stored in the repository, in `godot.toml`, in `deploy/cloudflare/compose.yml`,
   in the Docker image or in the run logs. In GitHub Actions they are `${{ secrets.NAME }}`
@@ -44,6 +44,18 @@ the environment (`CF_ACCOUNT_ID`) so that forks work unchanged.
   created with *Protect with Access*, and `/healthz` (the only unauthenticated route)
   returns `{"ok": true}` and nothing else. Never publish the chat with just
   `--token` on the open internet.
+* **Cost/abuse brake behind the login.** `godotai/chat/quota.py` caps agent runs in
+  flight on the whole server and runs per visitor (Access e-mail) per rolling 24 h
+  (`GODOTAI_MAX_CONCURRENT_RUNS` / `GODOTAI_MAX_RUNS_PER_DAY`, compose defaults 1 / 40);
+  beyond that the API answers `429` + `Retry-After` before any model work starts. Add a
+  Cloudflare WAF rate-limiting rule on `/api/` (one rule, IP-based, 10 s period on the
+  Free plan) and — for the Workers AI path — AI Gateway rate/spend limits on top.
+* **Two different Cloudflare tokens, two names.** The *setup* token
+  (`CLOUDFLARE_API_TOKEN`: Access/Tunnel/DNS edit) is used once by
+  `scripts/cloudflare_setup.py` and never reaches a container; the optional *run-time*
+  Workers AI token (`CF_WORKERS_AI_TOKEN`: Workers AI Read only) is the only Cloudflare
+  credential `compose.yml` passes to the chat. `tests/test_deploy_files.py` fails if
+  `CLOUDFLARE_API_TOKEN` ever appears in the compose file.
 * **The model never sees them.** The agent's tool sandbox refuses to read or
   write credential-shaped files (`*.keystore`, `*.pem`, `.env*`, `kaggle.json`,
   `access_token`, `.netrc`, `*.token`, …) and strips every environment variable
@@ -85,7 +97,13 @@ the environment (`CF_ACCOUNT_ID`) so that forks work unchanged.
   kernel (`scripts/kaggle_push.py`); the kernel itself must not receive it.
   Use Kaggle *Secrets* (notebook add-on) for anything the training run needs.
 * **GitHub Actions**: repository secrets, never organisation-wide ones, and
-  `permissions:` blocks scoped per job.
+  `permissions:` blocks scoped per job. The Cloudflare provisioning workflow
+  (`cloudflare-provision.yml`) is `workflow_dispatch`-only and reads its secrets from a
+  GitHub **environment** named `cloudflare` — create it *before* the first run with
+  *Required reviewers* and *Deployment branches: main only*, so that a workflow edited on
+  another branch or in a fork cannot use the token. It never uploads artifacts, never
+  writes the tunnel token, masks the allowed e-mail addresses in the log, and defaults
+  to a dry run.
 
 ## Reporting a vulnerability
 

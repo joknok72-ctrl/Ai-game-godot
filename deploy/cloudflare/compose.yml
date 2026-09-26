@@ -11,9 +11,13 @@
 #   gpu-base : vLLM serving the open-weight base (Qwen2.5-Coder-7B-Instruct, Apache-2.0) as "godotai" — needs an NVIDIA GPU
 #   gpu-lora : vLLM serving the base + YOUR LoRA adapter from training/ (mounted at /adapters/godotai) as "godotai"
 #   cpu      : Ollama on CPU (slow; for trying the site without a GPU) — set GODOTAI_MODEL=qwen2.5-coder:7b
+#   (no profile) + GODOTAI_ROUTE=workers_ai : no model container; the chat calls a Cloudflare-hosted open-weight model
+#            (Workers AI) with a token that can do nothing else — README.md path B; not "your own server", labelled "managed"
 #
 # Variables come from deploy/cloudflare/.env (written by cloudflare_setup.py, mode 0600, git-ignored) and the shell.
 # No credential is written in this file. The Anthropic/OpenAI vendor APIs are not used here at all.
+# A run quota (1 run at a time, 40 runs per visitor per day by default) answers 429 beyond the limit — the second
+# brake after Access; raise or lower it in .env (0 = unlimited).
 
 name: godotai
 
@@ -40,8 +44,18 @@ services:
       GODOTAI_MODEL: ${GODOTAI_MODEL:-godotai}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://model:8000/v1}
       GODOTAI_MODEL_KIND: ${GODOTAI_MODEL_KIND:-open_weight_deployment}
+      GODOTAI_BASE_MODEL: ${GODOTAI_BASE_MODEL:-Qwen/Qwen2.5-Coder-7B-Instruct}
       GODOTAI_ADAPTER: ${GODOTAI_ADAPTER:-}
-      GODOTAI_SERVING: self_hosted
+      # direct = the model server below (default). workers_ai = Cloudflare-hosted open-weight model instead of a GPU
+      # here (path B in README.md): then also set GODOTAI_SERVING=managed so the identity card stays honest, and give
+      # the container ONLY a token that can run Workers AI (CF_WORKERS_AI_TOKEN) — never the Tunnel/Access/DNS setup token.
+      GODOTAI_ROUTE: ${GODOTAI_ROUTE:-direct}
+      GODOTAI_SERVING: ${GODOTAI_SERVING:-self_hosted}
+      CF_ACCOUNT_ID: ${CF_ACCOUNT_ID:-}
+      CF_WORKERS_AI_TOKEN: ${CF_WORKERS_AI_TOKEN:-}
+      # cost/abuse brake behind Access (429 + Retry-After): runs in flight on the whole server / runs per visitor per 24 h
+      GODOTAI_MAX_CONCURRENT_RUNS: ${GODOTAI_MAX_CONCURRENT_RUNS:-1}
+      GODOTAI_MAX_RUNS_PER_DAY: ${GODOTAI_MAX_RUNS_PER_DAY:-40}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     volumes:
       - games:/games

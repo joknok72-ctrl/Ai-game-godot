@@ -38,9 +38,24 @@ class ComposeTests(unittest.TestCase):
         self.assertNotIn("--token", chat, "Access JWTs, not a shared token, authenticate visitors")
         self.assertIn("GODOTAI_PROVIDER: openai_compat", chat)
         self.assertIn("OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://model:8000/v1}", chat)
-        self.assertIn("GODOTAI_SERVING: self_hosted", chat)
+        self.assertIn("GODOTAI_ROUTE: ${GODOTAI_ROUTE:-direct}", chat, "your own model server is the default route")
+        self.assertIn("GODOTAI_SERVING: ${GODOTAI_SERVING:-self_hosted}", chat)
         for vendor in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
             self.assertNotIn(vendor, COMPOSE, f"{vendor}: the website path uses your own model server only")
+
+    def test_workers_ai_path_gets_only_a_narrow_runtime_token(self):
+        chat = service_block("chat")
+        self.assertIn("CF_WORKERS_AI_TOKEN: ${CF_WORKERS_AI_TOKEN:-}", chat)
+        self.assertIn("CF_ACCOUNT_ID: ${CF_ACCOUNT_ID:-}", chat)
+        self.assertNotIn("CLOUDFLARE_API_TOKEN", COMPOSE, "the Tunnel/Access/DNS setup token must never reach a container")
+
+    def test_run_quota_is_on_by_default_for_the_public_site(self):
+        chat = service_block("chat")
+        self.assertIn("GODOTAI_MAX_CONCURRENT_RUNS: ${GODOTAI_MAX_CONCURRENT_RUNS:-1}", chat)
+        self.assertIn("GODOTAI_MAX_RUNS_PER_DAY: ${GODOTAI_MAX_RUNS_PER_DAY:-40}", chat)
+        main_src = (REPO / "godotai" / "__main__.py").read_text(encoding="utf-8")
+        for name in ("GODOTAI_MAX_CONCURRENT_RUNS", "GODOTAI_MAX_RUNS_PER_DAY", "--max-concurrent-runs", "--max-runs-per-day"):
+            self.assertIn(name, main_src, f"{name} must be read by the chat command")
 
     def test_healthcheck_uses_the_unauthenticated_health_route_only(self):
         chat = service_block("chat")
@@ -99,8 +114,13 @@ class EnvExampleTests(unittest.TestCase):
         self.assertEqual(values["OPENAI_BASE_URL"], "http://model:8000/v1")
         self.assertEqual(values["GODOTAI_BASE_MODEL"], "Qwen/Qwen2.5-Coder-7B-Instruct")
         self.assertTrue(values["VLLM_MAX_MODEL_LEN"].isdigit())
-        for key in ("CLOUDFLARE_API_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
-            self.assertNotIn(key, values, f"{key} does not belong in the compose .env")
+        self.assertEqual((values["GODOTAI_MAX_CONCURRENT_RUNS"], values["GODOTAI_MAX_RUNS_PER_DAY"]), ("1", "40"),
+                         "the documented defaults match compose.yml")
+        for key in ("CLOUDFLARE_API_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CF_WORKERS_AI_TOKEN"):
+            self.assertNotIn(key, values, f"{key} does not belong in the compose .env as an active line")
+        self.assertIn("# CF_WORKERS_AI_TOKEN=<", ENV_EXAMPLE, "path B is documented as a commented placeholder")
+        self.assertIn("# GODOTAI_ROUTE=workers_ai", ENV_EXAMPLE)
+        self.assertIn("# GODOTAI_SERVING=managed", ENV_EXAMPLE, "Workers AI is labelled managed, never self-hosted")
         self.assertEqual(secrets.find_in_text(ENV_EXAMPLE), [])
 
     def test_lora_and_cpu_variants_are_documented_with_honest_identity(self):

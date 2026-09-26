@@ -56,7 +56,9 @@ class DetectionTests(unittest.TestCase):
                      # the deploy/cloudflare path adds two more credential names: the tunnel token that cloudflared
                      # receives and the chat server's bearer token (both must only ever live in an untracked .env)
                      f"TUNNEL_TOKEN={'e' * 40}", f"export CLOUDFLARE_TUNNEL_TOKEN='{'e' * 40}'",
-                     f"CF_TUNNEL_TOKEN: {'e' * 40}", f"GODOTAI_CHAT_TOKEN={'s' * 24}"):
+                     f"CF_TUNNEL_TOKEN: {'e' * 40}", f"GODOTAI_CHAT_TOKEN={'s' * 24}",
+                     # the Workers AI runtime token (deliberately a different name from the setup token)
+                     f"CF_WORKERS_AI_TOKEN={'w' * 40}"):
             self.assertTrue(self.kinds(line), line)
 
     def test_placeholders_and_names_are_not_secrets(self):

@@ -394,6 +394,11 @@ class SessionManager:
                         "messages": snap["messages"], "workspace": snap["workspace"]})
         return out
 
+    def running_count(self) -> int:
+        """Agent runs in flight right now (model turns / tool calls) — plans waiting for approval are not counted."""
+        with self._lock:
+            return sum(1 for s in self._sessions.values() if s.state == "running")
+
     def get(self, sid: str) -> Session | None:
         if not SESSION_ID_RE.match(sid or ""):
             return None
