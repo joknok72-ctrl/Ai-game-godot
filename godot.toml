@@ -1,0 +1,47 @@
+# =============================================================================
+# godot.toml — the SINGLE source of truth for the engine version this AI targets.
+#
+# The agent, the installer, the Docker image, the CI workflows and the project
+# templates all read this file. To move to another Godot version later, change
+# [engine].version / .release here, add the matching SHA512-SUMS.txt under
+# engine/checksums/<version>-<release>/ and re-run `python3 -m godotai doctor`.
+#
+# Verified 2026-09-26:
+#   * 4.7.2-stable released 18 Aug 2026 — https://godotengine.org/article/maintenance-release-godot-4-7-2/
+#   * Official binaries + checksums     — https://github.com/godotengine/godot-builds/releases/tag/4.7.2-stable
+# =============================================================================
+
+[engine]
+version = "4.7.2"
+release = "stable"            # stable | rc1 | beta2 | dev3 ... (must match the godot-builds tag suffix)
+flavor = "standard"           # standard (GDScript) | mono (.NET) — this AI targets GDScript, keep "standard"
+platform = "linux.x86_64"     # editor binary used inside the Linux/container environment
+download_base = "https://github.com/godotengine/godot-builds/releases/download"
+
+[android]
+# Requirements copied from the official 4.7 docs, "Exporting for Android"
+# https://docs.godotengine.org/en/stable/tutorials/export/exporting_for_android.html  (read 2026-09-26)
+jdk_major = 17
+cmdline_tools_url = "https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip"
+sdk_packages = [
+  "platform-tools",
+  "build-tools;35.0.1",
+  "platforms;android-35",
+  "cmdline-tools;latest",
+  "cmake;3.10.2.4988404",
+  "ndk;28.1.13356709",
+]
+# Name of the export preset the pipeline looks for inside a project's export_presets.cfg
+preset_name = "Android"
+
+[agent]
+provider = "anthropic"        # anthropic | openai_compat  (env: GODOTAI_PROVIDER)
+model = "claude-fable-5-1"    # Claude API id verified 2026-09-26 (env: GODOTAI_MODEL)
+effort = "max"                # low | medium | high | xhigh | max — Claude output_config.effort (env: GODOTAI_EFFORT).
+                              # "max" = deepest reasoning, no token-spend constraint (docs, read 2026-09-26). Lower to "high" for cheaper runs.
+max_tokens = 64000            # hard cap on thinking + text per turn; docs recommend a large value at high/xhigh/max
+max_iterations = 60           # hard stop for the act/verify loop
+max_verify_rounds = 4         # how many fix-and-re-verify cycles before giving up
+verify_frames = 120           # frames the game is run headless during verification
+require_plan_approval = true  # human gate between PLAN and ACT (CLI --yes skips it)
+strict_tools = false          # send strict:true on tool schemas (Claude strict tool use); off by default

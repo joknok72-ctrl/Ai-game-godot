@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Godot caches (never commit)
+.godot/
+*.import
+templates/**/.godot/
+
+# Build outputs
+*.apk
+*.aab
+*.pck
+export/
+
+# Secrets — keystores and credentials must never be committed
+*.keystore
+*.jks
+*.p12
+*.pem
+.env
+.env.*
+
+# Agent run logs (may contain full model transcripts)
+.godotai/runs/
+
+# Editor / OS noise
+.idea/
+.vscode/
+.DS_Store

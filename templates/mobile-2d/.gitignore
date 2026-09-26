@@ -1,0 +1,14 @@
+# Godot 4
+.godot/
+*.import
+build/
+export/
+*.apk
+*.aab
+*.pck
+# secrets — never commit keystores or credentials
+*.keystore
+*.jks
+.env
+# agent run logs
+.godotai/runs/
