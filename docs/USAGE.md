@@ -286,6 +286,22 @@ Release APK (GitHub Actions): add repository secrets `ANDROID_KEYSTORE_BASE64` (
 `ANDROID_KEYSTORE_USER`, `ANDROID_KEYSTORE_PASSWORD`, then run the *Build Android APK* workflow with
 `build_type=release` (or let the agent call `github_build_apk` with `build_type: release`).
 
+Workflow inputs of `build-android.yml` (all optional): `project_dir`, `build_type` (debug|release), `preset`,
+`verify` (default **true** — `--import`, `--check-only` on every `.gd`, smoke test; a failure stops the build with
+file/line before anything is exported) and `publish_release` (default false — attach the `.apk` to a GitHub Release
+`apk-<type>-<run>` marked *latest*, so `https://github.com/<owner>/<repo>/releases/latest/download/game-debug.apk` works
+from a phone browser; artifacts are zipped and need a GitHub login). Optional secret `ANDROID_DEBUG_KEYSTORE_BASE64`
+keeps the debug signature identical across builds (otherwise uninstall the previous debug APK first).
+`github_build_status` reports runs, artifacts and the releases with a `download_url` per `.apk`.
+
+### From an Android phone (Termux)
+
+See [`TERMUX.md`](TERMUX.md) (Arabic, English summary at the end). In short: the agent runs in Termux as is, the
+official editor does **not** (glibc vs Bionic) — run it inside a `proot-distro` Debian guest
+(`scripts/termux_setup.sh --proot`, then `--guest --install-godot` with `GODOTAI_ENGINE_PLATFORM=linux.arm64`) or leave
+verification + APK export to GitHub Actions. `doctor` and `/api/status` report the host (`host` row / object) and the
+installer refuses to download a binary the host cannot execute (`GODOTAI_INSTALL_ANYWAY=1` overrides).
+
 ## Writing tasks the agent does well
 
 - State the genre, platform and controls: *"2D endless runner for Android, one-thumb tap to jump, portrait"*.

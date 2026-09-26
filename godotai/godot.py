@@ -104,6 +104,11 @@ class Godot:
         except subprocess.TimeoutExpired as exc:
             return RunResult(full, -1, exc.stdout or "" if isinstance(exc.stdout, str) else "",
                              exc.stderr or "" if isinstance(exc.stderr, str) else "", timed_out=True)
+        except OSError as exc:
+            # ENOENT / EACCES / ENOEXEC ("Exec format error": an x86_64 editor on an ARM phone, or the glibc build
+            # launched directly in Termux). Callers already handle GodotNotFound; a raw OSError was a traceback.
+            from .hostenv import exec_failure_hint
+            raise GodotNotFound(f"cannot execute Godot binary {self.binary}: {exc}\n{exec_failure_hint(self.engine)}") from exc
         return RunResult(full, proc.returncode, proc.stdout, proc.stderr)
 
     def version_output(self) -> str:

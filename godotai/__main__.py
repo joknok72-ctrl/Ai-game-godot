@@ -54,15 +54,28 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     print(f"godotai {__version__} — pinned engine: Godot {eng.tag} ({eng.flavor}, {eng.platform})")
     print(f"config: {cfg.path}")
+    from .hostenv import TERMUX_GUIDE, describe_host, platform_mismatch, termux_native_hint
+    host = describe_host()
+    mismatch = platform_mismatch(eng, host.engine_platform)
+    if host.termux_native:
+        row("host", False, f"{host.label} — the glibc editor cannot run directly in Termux (see {TERMUX_GUIDE}; "
+                           "chat/plan/GitHub tools work, engine verification needs proot-distro or GitHub Actions)")
+    elif mismatch:
+        row("host", False, f"{host.label} — {mismatch}")
+    else:
+        row("host", True, host.label)
     binary = find_godot_binary(eng)
     if binary is None:
-        row("editor binary", False, "not found (run: python3 -m godotai install-godot)")
+        row("editor binary", False, "not found — " + (termux_native_hint("en") if host.termux_native else
+                                                     "run: python3 -m godotai install-godot"
+                                                     + (f" (with GODOTAI_ENGINE_PLATFORM={host.engine_platform})"
+                                                        if mismatch else "")))
     else:
         try:
             g = Godot(eng, binary)
             row("editor binary", True, f"{g.version()} at {binary}")
             row("export templates", g.templates_installed(), str(export_templates_dir(eng)))
-        except GodotVersionMismatch as exc:
+        except (GodotNotFound, GodotVersionMismatch) as exc:      # GodotNotFound: found but cannot execute (wrong CPU / Termux)
             row("editor binary", False, str(exc))
     row("pinned checksums", cfg.checksums_file().is_file(), str(cfg.checksums_file()))
     java = shutil.which("java")
@@ -278,6 +291,14 @@ def cmd_run(args: argparse.Namespace, plan_only: bool = False) -> int:
     agent = Agent(cfg, Path(args.workspace), provider, build_registry(include_github=not args.no_github),
                   approve=approve, plan_only=plan_only, on_text=lambda t: print(f"\n🤖 {t}\n"))
     print(f"godotai — Godot {cfg.engine.tag} — {provider.name}/{provider.model} effort={cfg.agent.effort}")
+    if not plan_only:
+        try:
+            Godot(cfg.engine)
+        except (GodotNotFound, GodotVersionMismatch) as exc:
+            # Say it before the first model request: without the engine no run can end 'success', and on a metered
+            # free quota every fruitless verify round is a request spent (docs/TERMUX.md for phones).
+            print(f"⚠ engine: {exc}\n  A run ends 'success' only after godot_verify passes with the real engine; without it the "
+                  "model is told the problem each round and the run ends 'failed'. Plan-only (`plan`) needs no engine.")
     summary = agent.run(args.task)
     print("\n" + "=" * 70)
     print(f"status: {summary.status} — {summary.message}")
