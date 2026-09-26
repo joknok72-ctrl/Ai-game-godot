@@ -36,6 +36,8 @@ service-account*.json
 
 # Agent run logs (full model transcripts) and generated artefacts
 .godotai/runs/
+.godotai/chat.jsonl
+/games/
 evals/results/
 data/
 training/output/

@@ -6,6 +6,11 @@
 #   docker run --rm -it -e ANTHROPIC_API_KEY -e GITHUB_TOKEN -v "$PWD/games:/games" godotai \
 #          run "make a 2D endless runner for Android" --workspace /games/runner --yes
 #
+#   # Browser chat UI (talk to the AI at http://127.0.0.1:8765 on the host). Inside a container the
+#   # server must bind 0.0.0.0, which godotai only allows together with an access token:
+#   docker run --rm -it -e ANTHROPIC_API_KEY -e GODOTAI_CHAT_TOKEN=<choose-a-secret> \
+#          -p 127.0.0.1:8765:8765 -v "$PWD/games:/games" godotai chat --host 0.0.0.0 --games-dir /games
+#
 # Versions come from godot.toml (copied in before the install step), so retargeting
 # the engine is a one-line change + rebuild. Not built in CI here (no Docker on the
 # sandbox that produced this repo) — see docs/RESEARCH.md "Limitations".
@@ -54,6 +59,7 @@ COPY .github ./.github
 COPY README.md ./
 
 ENV GODOTAI_CONFIG=/opt/godotai/godot.toml
+EXPOSE 8765
 VOLUME ["/games"]
 WORKDIR /games
 ENTRYPOINT ["python3", "-m", "godotai"]
