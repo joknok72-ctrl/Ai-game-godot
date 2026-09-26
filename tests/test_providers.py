@@ -9,7 +9,10 @@ from unittest import mock
 from _helpers import repo_config
 
 from godotai.providers import ProviderError, ToolCall, make_provider
-from godotai.providers.anthropic import API_VERSION, AnthropicProvider
+from godotai.providers import cloudflare
+from godotai.providers.anthropic import (API_VERSION, BETA_BINDING_CONTROLS, BETA_PER_MESSAGE_EFFORT,
+                                         BETA_PROGRESS_UPDATES, BETA_TASK_BUDGETS, BETA_TURN_SCOPED_SYSTEM,
+                                         AnthropicProvider)
 from godotai.providers.openai_compat import OpenAICompatProvider
 from godotai.tools import build_registry
 
@@ -162,6 +165,168 @@ class FactoryTests(unittest.TestCase):
         p = make_provider(replace(cfg.agent, provider="openai_compat", model="glm-5", base_url="http://h/v1"), api_key="k")
         self.assertIsInstance(p, OpenAICompatProvider)
         self.assertEqual(p.url, "http://h/v1/chat/completions")
+
+
+class Fable51BetaShapeTests(unittest.TestCase):
+    """Opt-in beta features — request shapes copied from the Fable 5.1 docs (read 2026-09-26)."""
+
+    def test_defaults_send_no_beta_header_and_no_thinking_object(self):
+        p = AnthropicProvider("claude-fable-5-1", api_key="k", effort="max")
+        self.assertEqual(p.betas(), [])
+        self.assertNotIn("anthropic-beta", p.headers())
+        body = p.build_request(SYSTEM, [], TOOLS)
+        self.assertNotIn("thinking", body)
+        self.assertEqual(body["output_config"], {"effort": "max"})
+        self.assertIsNone(p.effort_message("high"), "per-message effort is off unless enabled")
+
+    def test_progress_updates(self):
+        p = AnthropicProvider("claude-fable-5-1", api_key="k", progress_updates=True)
+        self.assertEqual(p.headers()["anthropic-beta"], BETA_PROGRESS_UPDATES)
+        body = p.build_request(SYSTEM, [], TOOLS)
+        self.assertEqual(body["thinking"], {"type": "adaptive", "display": "updates"})
+        self.assertNotIn("budget_tokens", body["thinking"])
+        content = [{"type": "thinking", "thinking": "Reading the project files now.", "signature": "s"},
+                   {"type": "thinking", "thinking": "", "signature": "s2"},
+                   {"type": "tool_use", "id": "t1", "name": "list_files", "input": {}}]
+        p.transport = FakeTransport({"type": "message", "content": content, "stop_reason": "tool_use", "usage": {},
+                                     "input_transformations": [{"type": "thinking_blocks_dropped", "count": 1}]})
+        turn = p.complete(SYSTEM, [], TOOLS)
+        self.assertEqual(turn.progress, ["Reading the project files now."])
+        self.assertEqual(turn.notices, [{"type": "thinking_blocks_dropped", "count": 1}])
+        self.assertEqual(turn.raw_assistant_message["content"], content, "blocks are still replayed verbatim")
+        # without the beta the same thinking text is NOT surfaced as progress
+        q = AnthropicProvider("claude-fable-5-1", api_key="k")
+        q.transport = p.transport
+        self.assertEqual(q.complete(SYSTEM, [], TOOLS).progress, [])
+
+    def test_task_budget(self):
+        p = AnthropicProvider("claude-fable-5-1", api_key="k", effort="max", task_budget_tokens=200_000)
+        self.assertEqual(p.headers()["anthropic-beta"], BETA_TASK_BUDGETS)
+        body = p.build_request(SYSTEM, [], TOOLS)
+        self.assertEqual(body["output_config"], {"effort": "max", "task_budget": {"type": "tokens", "total": 200000}})
+
+    def test_turn_scoped_system_nudge_placement(self):
+        call = ToolCall("t1", "list_files", {})
+        plain = AnthropicProvider("claude-fable-5-1", api_key="k")
+        msgs = plain.tool_results_message([(call, "a.gd", False)], nudge="NUDGE")
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["content"][-1], {"type": "text", "text": "NUDGE"}, "documented non-beta placement")
+        beta = AnthropicProvider("claude-fable-5-1", api_key="k", turn_scoped_system=True)
+        self.assertEqual(beta.headers()["anthropic-beta"], BETA_TURN_SCOPED_SYSTEM)
+        msgs = beta.tool_results_message([(call, "a.gd", False)], nudge="NUDGE")
+        self.assertEqual(len(msgs), 2)
+        self.assertEqual([b["type"] for b in msgs[0]["content"]], ["tool_result"])
+        self.assertEqual(msgs[1], {"role": "system", "clear_at": "next_user_message", "content": "NUDGE"})
+        self.assertEqual(len(beta.tool_results_message([(call, "x", False)], nudge=None)), 1)
+
+    def test_per_message_effort_and_binding_controls(self):
+        p = AnthropicProvider("claude-fable-5-1", api_key="k", effort="max", per_message_effort=True, prefix_binding_drop=True)
+        self.assertEqual(p.headers()["anthropic-beta"], f"{BETA_PER_MESSAGE_EFFORT},{BETA_BINDING_CONTROLS}")
+        self.assertEqual(p.effort_message("high"), {"role": "system", "content": [], "output_config": {"effort": "high"}})
+        body = p.build_request(SYSTEM, [], TOOLS)
+        self.assertEqual(body["thinking"], {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}})
+
+    def test_all_betas_join_in_one_header(self):
+        p = AnthropicProvider("claude-fable-5-1", api_key="k", progress_updates=True, task_budget_tokens=50_000,
+                              turn_scoped_system=True, per_message_effort=True, prefix_binding_drop=True)
+        header = p.headers()["anthropic-beta"]
+        self.assertEqual(header.split(","), [BETA_PROGRESS_UPDATES, BETA_TASK_BUDGETS, BETA_TURN_SCOPED_SYSTEM,
+                                             BETA_PER_MESSAGE_EFFORT, BETA_BINDING_CONTROLS])
+        self.assertEqual(len(set(header.split(","))), 5)
+
+    def test_extra_headers_are_sent(self):
+        p = AnthropicProvider("claude-fable-5-1", api_key="k", extra_headers={"cf-aig-authorization": "Bearer <gw>"})
+        self.assertEqual(p.headers()["cf-aig-authorization"], "Bearer <gw>")
+        self.assertEqual(p.headers()["x-api-key"], "k")
+        o = OpenAICompatProvider("m", api_key="k", base_url="http://x/v1", extra_headers={"X-Test": "1"})
+        o.transport = FakeTransport({"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}]})
+        o.complete(SYSTEM, [], TOOLS)
+        self.assertEqual(o.transport.calls[0][1]["X-Test"], "1")
+        self.assertEqual(o.transport.calls[0][1]["Authorization"], "Bearer k")
+
+    def test_openai_compat_nudge_is_a_user_message(self):
+        o = OpenAICompatProvider("m", api_key="k", base_url="http://x/v1")
+        msgs = o.tool_results_message([(ToolCall("c1", "x", {}), "ok", False)], nudge="NUDGE")
+        self.assertEqual(msgs[-1], {"role": "user", "content": "NUDGE"})
+        self.assertIsNone(o.effort_message("high"))
+
+
+class CloudflareRoutingTests(unittest.TestCase):
+    """URL construction from env var *names* — no account id / token appears in the repo."""
+
+    ENV = {"CF_ACCOUNT_ID": "acc123", "CF_AIG_GATEWAY": "godotai-gw", "CF_AIG_TOKEN": "", "CLOUDFLARE_API_TOKEN": ""}
+
+    def test_gateway_urls_follow_the_documented_paths(self):
+        with mock.patch.dict(os.environ, self.ENV, clear=False):
+            self.assertEqual(cloudflare.gateway_base_url("anthropic"),
+                             "https://gateway.ai.cloudflare.com/v1/acc123/godotai-gw/anthropic")
+            self.assertEqual(cloudflare.gateway_base_url("compat"),
+                             "https://gateway.ai.cloudflare.com/v1/acc123/godotai-gw/compat")
+            self.assertEqual(cloudflare.workers_ai_base_url(), "https://api.cloudflare.com/client/v4/accounts/acc123/ai/v1")
+            self.assertEqual(cloudflare.gateway_headers(), {}, "unauthenticated gateway → no extra header")
+            with self.assertRaises(cloudflare.CloudflareRouteError):
+                cloudflare.gateway_base_url("openai")
+            with self.assertRaises(cloudflare.CloudflareRouteError):
+                cloudflare.workers_ai_api_key()
+        with mock.patch.dict(os.environ, {**self.ENV, "CF_AIG_TOKEN": "gw-secret"}):
+            self.assertEqual(cloudflare.gateway_headers(), {"cf-aig-authorization": "Bearer gw-secret"})
+
+    def test_missing_env_gives_clear_error(self):
+        with mock.patch.dict(os.environ, {"CF_ACCOUNT_ID": "", "CF_AIG_GATEWAY": ""}):
+            with self.assertRaises(cloudflare.CloudflareRouteError) as cm:
+                cloudflare.gateway_base_url("anthropic")
+            self.assertIn("CF_ACCOUNT_ID is not set", str(cm.exception))
+
+    def test_make_provider_routes(self):
+        from dataclasses import replace
+        cfg = repo_config()
+        with mock.patch.dict(os.environ, {**self.ENV, "CF_AIG_TOKEN": "gw-secret", "CLOUDFLARE_API_TOKEN": "cf-secret"}):
+            p = make_provider(replace(cfg.agent, route="cf_gateway"), api_key="anthropic-key")
+            self.assertIsInstance(p, AnthropicProvider)
+            self.assertEqual(p.url, "https://gateway.ai.cloudflare.com/v1/acc123/godotai-gw/anthropic/v1/messages")
+            h = p.headers()
+            self.assertEqual(h["x-api-key"], "anthropic-key", "the provider key still travels in x-api-key")
+            self.assertEqual(h["cf-aig-authorization"], "Bearer gw-secret")
+
+            o = make_provider(replace(cfg.agent, provider="openai_compat", model="gpt-x", route="cf_gateway"), api_key="k")
+            self.assertEqual(o.url, "https://gateway.ai.cloudflare.com/v1/acc123/godotai-gw/compat/chat/completions")
+            self.assertEqual(o.extra_headers, {"cf-aig-authorization": "Bearer gw-secret"})
+
+            w = make_provider(replace(cfg.agent, provider="openai_compat", model="@cf/some/model", route="workers_ai"))
+            self.assertEqual(w.url, "https://api.cloudflare.com/client/v4/accounts/acc123/ai/v1/chat/completions")
+            self.assertEqual(w.api_key, "cf-secret")
+
+            # an explicit base_url wins over the route-derived one
+            e = make_provider(replace(cfg.agent, route="cf_gateway", base_url="https://proxy.example/x"), api_key="k")
+            self.assertEqual(e.url, "https://proxy.example/x/v1/messages")
+
+    def test_gateway_stored_key_needs_no_anthropic_key(self):
+        """BYOK / unified billing: only cf-aig-authorization is sent (docs example, read 2026-09-26)."""
+        from dataclasses import replace
+        cfg = repo_config()
+        with mock.patch.dict(os.environ, {**self.ENV, "CF_AIG_TOKEN": "gw-secret", "ANTHROPIC_API_KEY": ""}):
+            p = make_provider(replace(cfg.agent, route="cf_gateway"))
+            self.assertTrue(p.gateway_stored_key)
+            self.assertNotIn("x-api-key", p.headers())
+            self.assertEqual(p.headers()["cf-aig-authorization"], "Bearer gw-secret")
+            p.transport = FakeTransport({"type": "message", "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn", "usage": {}})
+            self.assertEqual(p.complete(SYSTEM, [], TOOLS).text, "hi")
+        with mock.patch.dict(os.environ, {**self.ENV, "ANTHROPIC_API_KEY": ""}):
+            q = make_provider(replace(cfg.agent, route="cf_gateway"))   # unauthenticated gateway, no key anywhere
+            self.assertFalse(q.gateway_stored_key)
+            with self.assertRaises(ProviderError):
+                q.complete(SYSTEM, [], TOOLS)
+
+    def test_factory_passes_beta_flags(self):
+        from dataclasses import replace
+        cfg = repo_config()
+        p = make_provider(replace(cfg.agent, progress_updates=True, task_budget_tokens=30_000, act_effort="high"), api_key="k")
+        self.assertTrue(p.progress_updates)
+        self.assertEqual(p.task_budget_tokens, 30_000)
+        self.assertTrue(p.per_message_effort)
+        self.assertIn(BETA_PER_MESSAGE_EFFORT, p.betas())
+        q = make_provider(replace(cfg.agent, act_effort="max"), api_key="k")
+        self.assertFalse(q.per_message_effort, "same effort → no beta header needed")
 
 
 if __name__ == "__main__":

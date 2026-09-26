@@ -1,4 +1,6 @@
 # Continuous verification of the agent itself and of the template game.
+# Everything here runs without model API keys, Cloudflare or Kaggle credentials:
+# the tests are stdlib-only and the engine job uses the pinned Godot binary.
 name: CI
 
 on:
@@ -6,6 +8,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   python-tests:
@@ -15,10 +20,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Unit tests (stdlib unittest, no network)
+      - name: Unit tests (stdlib unittest, no network, engine-dependent tests skip)
         run: python3 -m unittest discover -s tests -v
-      - name: Byte-compile package
-        run: python3 -m compileall -q godotai
+      - name: Byte-compile package, training and helper scripts
+        run: python3 -m compileall -q godotai training scripts
+      - name: Secret scan of the checked-in tree (fails on token-shaped strings)
+        run: python3 scripts/secret_scan.py .
+      - name: Training pipeline dry-run on a synthetic verified trajectory (no ML deps)
+        run: |
+          python3 - <<'EOF'
+          import json, sys
+          sys.path.insert(0, "tests")
+          from test_evals_dataset import anthropic_run, openai_run
+          from pathlib import Path
+          runs = Path("/tmp/ci-runs"); runs.mkdir(exist_ok=True)
+          (runs / "a.json").write_text(json.dumps(anthropic_run()))
+          (runs / "b.json").write_text(json.dumps(openai_run()))
+          EOF
+          python3 -m godotai dataset extract --runs /tmp/ci-runs --out /tmp/ci-sft.jsonl
+          python3 training/train_qlora.py --data /tmp/ci-sft.jsonl --dry-run --min-iterations 0
+          python3 scripts/kaggle_push.py --check   # offline: renders kernel metadata, no credentials
 
   godot-verify-template:
     runs-on: ubuntu-latest
@@ -32,11 +53,21 @@ jobs:
         run: python3 -m godotai install-godot --editor-only --bin-dir "$HOME/.local/bin"
       - name: Doctor
         run: PATH="$HOME/.local/bin:$PATH" python3 -m godotai doctor || true
+      - name: Build the ClassDB API index from the real engine and spot-check it
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          python3 -m godotai apiref build --force
+          python3 -m godotai apiref lookup CharacterBody2D move_and_slide
+          python3 -m godotai apiref lookup Node queue_free
       - name: Scaffold a game from the template and verify it with the real engine
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           python3 -m godotai new --template mobile-2d --dest /tmp/game --name "CI Game" --package com.example.cigame
           python3 -m godotai verify --project /tmp/game --json /tmp/verify.json
+      - name: Engine-verified unit tests (the ones skipped without a binary)
+        run: PATH="$HOME/.local/bin:$PATH" python3 -m unittest discover -s tests -p "test_apiref*.py" -v
+      - name: Score the template against the baseline eval task (engine-backed, no LLM)
+        run: PATH="$HOME/.local/bin:$PATH" python3 -m godotai eval score --task template-baseline --project /tmp/game
       - uses: actions/upload-artifact@v4
         with:
           name: verification-report

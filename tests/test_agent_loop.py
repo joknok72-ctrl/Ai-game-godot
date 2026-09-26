@@ -16,7 +16,7 @@ from typing import Any
 
 from _helpers import repo_config, valid_plan
 
-from godotai.agent import Agent
+from godotai.agent import BATCH_NUDGE, LONG_OUTPUT_NOTE, Agent
 from godotai.providers.base import ModelTurn, Provider, ToolCall
 from godotai.tools import Tool, ToolContext, ToolRegistry, ToolResult
 from godotai.tools import fs as fs_tools
@@ -41,6 +41,8 @@ class ScriptedProvider(Provider):
         if not self.turns:
             raise AssertionError("scripted provider ran out of turns")
         spec = self.turns.pop(0)
+        if spec.get("error"):
+            raise spec["error"]
         calls = []
         for name, args in spec.get("calls", []):
             self.counter += 1
@@ -50,14 +52,26 @@ class ScriptedProvider(Provider):
         content += [{"type": "tool_use", "id": c.id, "name": c.name, "input": c.args} for c in calls]
         return ModelTurn(text=text, tool_calls=calls, stop_reason=spec.get("stop", "tool_use" if calls else "end_turn"),
                          raw_assistant_message={"role": "assistant", "content": content},
-                         usage={"output_tokens": 1}, refusal=spec.get("refusal", False))
+                         usage={"output_tokens": 1}, refusal=spec.get("refusal", False),
+                         progress=list(spec.get("progress", [])), notices=list(spec.get("notices", [])))
 
     def user_message(self, text):
         return {"role": "user", "content": [{"type": "text", "text": text}]}
 
-    def tool_results_message(self, results):
-        return [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": c.id, "content": out, "is_error": err}
-                                             for c, out, err in results]}]
+    def tool_results_message(self, results, nudge=None):
+        blocks = [{"type": "tool_result", "tool_use_id": c.id, "content": out, "is_error": err}
+                  for c, out, err in results]
+        if nudge:
+            blocks.append({"type": "text", "text": nudge})
+        return [{"role": "user", "content": blocks}]
+
+
+class EffortAwareProvider(ScriptedProvider):
+    """Scripted provider that also supports per-message effort changes."""
+    supports_effort_messages = True
+
+    def effort_message(self, effort):
+        return {"role": "system", "content": [], "output_config": {"effort": effort}}
 
 
 class FakeVerify:
@@ -237,6 +251,113 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("no project.godot yet", first_user)
         self.assertIn("godot-4.7-essentials.md", first_user)  # knowledge index is injected
         self.assertIn("THINK & PLAN only", first_user)
+
+
+class HarnessBehaviourTests(unittest.TestCase):
+    """Fable-5.1-specific harness behaviour: nudges, progress, effort switch, run log."""
+
+    def setUp(self):
+        self.cfg = repo_config()
+        self.ws = Path(tempfile.mkdtemp(prefix="godotai-agent-h-"))
+        self.plan = valid_plan(self.cfg)
+
+    def run_agent(self, turns, cfg=None, provider_cls=ScriptedProvider, on_progress=None):
+        cfg = cfg or self.cfg
+        provider = provider_cls(turns)
+        logs: list[str] = []
+        agent = Agent(cfg, self.ws, provider, make_registry(FakeVerify()), log=logs.append, on_text=lambda t: None,
+                      on_progress=on_progress)
+        summary = agent.run("Make a tap-dodge game for Android")
+        return agent, provider, summary, logs
+
+    def test_batch_nudge_follows_every_tool_result_and_is_verbatim(self):
+        turns = [{"calls": [("list_files", {})]}, {"calls": [("submit_plan", self.plan)]},
+                 {"calls": [("godot_verify", {})]}, {"text": "done", "stop": "end_turn"}]
+        agent, provider, summary, _ = self.run_agent(turns)
+        self.assertEqual(summary.status, "success")
+        result_msgs = [m for m in agent.messages if m["role"] == "user" and any(b.get("type") == "tool_result" for b in m["content"])]
+        self.assertEqual(len(result_msgs), 3)
+        for m in result_msgs:
+            self.assertEqual(m["content"][-1], {"type": "text", "text": BATCH_NUDGE})
+        self.assertTrue(BATCH_NUDGE.startswith("First privately list what you need next"))
+
+    def test_batch_nudge_can_be_disabled(self):
+        from dataclasses import replace
+        cfg = replace(self.cfg, agent=replace(self.cfg.agent, batch_nudge=False))
+        turns = [{"calls": [("submit_plan", self.plan)]}, {"calls": [("godot_verify", {})]}, {"text": "done", "stop": "end_turn"}]
+        agent, *_ = self.run_agent(turns, cfg=cfg)
+        self.assertNotIn(BATCH_NUDGE, json.dumps(agent.messages))
+
+    def test_long_output_note_only_at_xhigh_or_max(self):
+        from dataclasses import replace
+        turns = [{"text": "", "stop": "refusal", "refusal": True}]
+        agent, *_ = self.run_agent(turns)
+        first = agent.messages[0]["content"][0]["text"]
+        self.assertIn("single limit of about 64,000 tokens", first)
+        self.assertIn(LONG_OUTPUT_NOTE.splitlines()[0][:60], first)
+        self.ws = Path(tempfile.mkdtemp(prefix="godotai-agent-h-"))
+        cfg = replace(self.cfg, agent=replace(self.cfg.agent, effort="high"))
+        agent, *_ = self.run_agent(turns, cfg=cfg)
+        self.assertNotIn("single limit of about", agent.messages[0]["content"][0]["text"])
+
+    def test_planning_prompt_reports_api_index_status(self):
+        turns = [{"text": "", "stop": "refusal", "refusal": True}]
+        agent, *_ = self.run_agent(turns)
+        first = agent.messages[0]["content"][0]["text"]
+        self.assertTrue("api_lookup" in first, first[:400])
+        self.assertRegex(first, r"API index \(exact ClassDB of the pinned binary\): (ready — \d+ classes|not built yet)")
+
+    def test_progress_updates_and_notices_are_surfaced_and_logged(self):
+        seen: list[str] = []
+        turns = [{"calls": [("submit_plan", self.plan)], "progress": ["Drafting the plan."]},
+                 {"calls": [("godot_verify", {})], "progress": ["Verifying with the engine."],
+                  "notices": [{"type": "thinking_blocks_dropped", "count": 1}]},
+                 {"text": "done", "stop": "end_turn"}]
+        agent, provider, summary, logs = self.run_agent(turns, on_progress=seen.append)
+        self.assertEqual(seen, ["Drafting the plan.", "Verifying with the engine."])
+        self.assertTrue(any("API notice" in l and "thinking_blocks_dropped" in l for l in logs), logs)
+        log = json.loads(summary.log_path.read_text(encoding="utf-8"))
+        self.assertEqual(log["progress"], seen)
+        self.assertEqual(log["notices"], [{"type": "thinking_blocks_dropped", "count": 1}])
+        self.assertEqual(log["agent_config"]["effort"], "max")
+        self.assertEqual(log["agent_config"]["route"], "direct")
+        self.assertEqual(log["system"], agent.system)
+        self.assertEqual(log["tools"], agent.tools)
+        self.assertEqual(log["provider"], "scripted")
+        self.assertTrue(log["verification_passed"])
+
+    def test_act_effort_switch_is_append_only_and_provider_gated(self):
+        from dataclasses import replace
+        cfg = replace(self.cfg, agent=replace(self.cfg.agent, act_effort="high"))
+        turns = [{"calls": [("submit_plan", self.plan)]}, {"calls": [("godot_verify", {})]}, {"text": "done", "stop": "end_turn"}]
+        agent, provider, summary, logs = self.run_agent(turns, cfg=cfg, provider_cls=EffortAwareProvider)
+        self.assertEqual(summary.status, "success")
+        sys_msgs = [m for m in agent.messages if m["role"] == "system"]
+        self.assertEqual(sys_msgs, [{"role": "system", "content": [], "output_config": {"effort": "high"}}])
+        idx = agent.messages.index(sys_msgs[0])
+        self.assertEqual(agent.messages[idx + 1]["role"], "user", "effort message directly precedes the ACT user turn")
+        self.assertIn("Plan APPROVED", agent.messages[idx + 1]["content"][0]["text"])
+        self.assertTrue(any("effort → high" in l for l in logs))
+        # a provider without the capability keeps the configured effort and says so
+        self.ws = Path(tempfile.mkdtemp(prefix="godotai-agent-h-"))
+        agent, provider, summary, logs = self.run_agent(list(turns), cfg=cfg)
+        self.assertEqual(summary.status, "success")
+        self.assertFalse([m for m in agent.messages if m["role"] == "system"])
+        self.assertTrue(any("cannot change effort mid-run" in l for l in logs))
+        # same effort → nothing is appended even when supported
+        self.ws = Path(tempfile.mkdtemp(prefix="godotai-agent-h-"))
+        cfg2 = replace(self.cfg, agent=replace(self.cfg.agent, act_effort="max"))
+        agent, *_ = self.run_agent(list(turns), cfg=cfg2, provider_cls=EffortAwareProvider)
+        self.assertFalse([m for m in agent.messages if m["role"] == "system"])
+
+    def test_act_message_tells_the_model_to_batch_lookups_and_finish(self):
+        turns = [{"calls": [("submit_plan", self.plan)]}, {"calls": [("godot_verify", {})]}, {"text": "done", "stop": "end_turn"}]
+        agent, *_ = self.run_agent(turns)
+        act = next(m for m in agent.messages if m["role"] == "user" and "Plan APPROVED" in json.dumps(m))
+        text = act["content"][0]["text"]
+        self.assertIn("api_lookup (batch the lookups)", text)
+        self.assertIn("Do not end your turn until godot_verify reports PASS", text)
+        self.assertIn("operating autonomously", text)
 
 
 if __name__ == "__main__":

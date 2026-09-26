@@ -105,11 +105,16 @@ class DockerfileTests(unittest.TestCase):
 
 class RepoHygieneTests(unittest.TestCase):
     def test_no_secrets_committed(self):
+        # Legacy narrow patterns kept from PR #1, applied to the same text files the
+        # project scanner considers (skips .git/, __pycache__/, binaries, .godot/).
+        from godotai import secrets
+
         pat = re.compile(r"(sk-ant-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16})")
-        for p in REPO.rglob("*"):
-            if p.is_file() and not any(part.startswith(".git") and part != ".github" for part in p.parts) and p.suffix not in (".apk", ".pck"):
-                text = p.read_text(encoding="utf-8", errors="ignore")
-                self.assertIsNone(pat.search(text), p)
+        for p in secrets.iter_text_files(REPO):
+            text = p.read_text(encoding="utf-8", errors="ignore")
+            self.assertIsNone(pat.search(text), p)
+        # The broader scanner (Kaggle/Cloudflare/HF tokens, PEM blocks, credential assignments)
+        # is exercised by tests/test_secrets.py::test_repository_is_clean and scripts/secret_scan.py in CI.
 
     def test_root_gitignore_and_pyproject(self):
         gi = (REPO / ".gitignore").read_text(encoding="utf-8")

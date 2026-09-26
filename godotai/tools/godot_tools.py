@@ -20,7 +20,11 @@ ANDROID_KEYSTORE_ENV = (
 # Commands the model may run through run_command. Anything else is rejected.
 SHELL_ALLOWLIST = ("godot", "gdlint", "gdformat", "gdparse", "python3", "ls", "cat", "grep", "find", "wc", "head", "tail",
                    "git", "keytool", "java", "sdkmanager", "adb", "unzip", "zip", "file", "stat", "diff")
-SECRET_ENV_MARKERS = ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "KEYSTORE")
+# Any env var whose name contains one of these never reaches a child process (engine, gradle,
+# run_command). Covers ANTHROPIC_API_KEY, GITHUB_TOKEN, KAGGLE_API_TOKEN / KAGGLE_KEY,
+# CLOUDFLARE_API_TOKEN / CF_AIG_TOKEN, keystore passwords, generic *_CREDENTIALS.
+SECRET_ENV_MARKERS = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "API_KEY", "_KEY", "KEYSTORE", "KAGGLE", "CLOUDFLARE",
+                      "CF_AIG", "CREDENTIAL")
 
 
 def _godot(ctx: ToolContext) -> Godot:
@@ -93,11 +97,21 @@ def register(reg: ToolRegistry) -> None:
         if not p.is_file():
             return ToolResult.error(f"{args['path']!r} not found")
         g = _godot(ctx)
-        res = g.check_script(ctx.workspace, "res://" + p.relative_to(ctx.workspace).as_posix())
+        rel = p.relative_to(ctx.workspace).as_posix()
+        res = g.check_script(ctx.workspace, "res://" + rel)
         errors, warnings = classify_output(res.output)
         if res.returncode != 0 or errors:
             return ToolResult.error("parse FAILED\n" + "\n".join(errors or [res.output[-2000:]]))
-        return ToolResult.success("parse OK" + (f"\nwarnings:\n" + "\n".join(warnings) if warnings else ""))
+        out = "parse OK" + ("\nwarnings:\n" + "\n".join(warnings) if warnings else "")
+        # advisory: the engine accepts untyped calls to non-existent members at parse time; the
+        # ClassDB lint catches the common Godot-3 leftovers before they fail at run time.
+        from . import apiref_tools
+        from .. import apiref
+        findings = apiref.lint_script(p.read_text(encoding="utf-8", errors="replace"), apiref_tools.get_index(ctx),
+                                      apiref_tools.project_known_classes(ctx))
+        if findings:
+            out += "\napi_lint (advisory):\n" + "\n".join(f"  {rel}:{f}" for f in findings[:30])
+        return ToolResult.success(out)
 
     @reg.add(
         "godot_run_headless",

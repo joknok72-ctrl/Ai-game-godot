@@ -37,6 +37,8 @@ class ModelTurn:
     raw_assistant_message: dict[str, Any]
     usage: dict[str, Any] = field(default_factory=dict)
     refusal: bool = False
+    progress: list[str] = field(default_factory=list)   # progress-update blocks (display="updates"), user-facing
+    notices: list[Any] = field(default_factory=list)    # e.g. input_transformations (dropped thinking blocks)
 
     @property
     def wants_tools(self) -> bool:
@@ -74,14 +76,17 @@ def http_json_transport(url: str, headers: dict[str, str], body: dict[str, Any],
 
 class Provider(ABC):
     name: str = "base"
+    supports_effort_messages: bool = False   # per-message effort changes (Claude Fable 5.1 beta)
 
     def __init__(self, model: str, max_tokens: int = 16000, effort: str = "high",
-                 transport: Transport | None = None, strict_tools: bool = False):
+                 transport: Transport | None = None, strict_tools: bool = False,
+                 extra_headers: dict[str, str] | None = None):
         self.model = model
         self.max_tokens = max_tokens
         self.effort = effort
         self.strict_tools = strict_tools
         self.transport: Transport = transport or http_json_transport
+        self.extra_headers: dict[str, str] = dict(extra_headers or {})
 
     @abstractmethod
     def complete(self, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ModelTurn: ...
@@ -90,8 +95,18 @@ class Provider(ABC):
     def user_message(self, text: str) -> dict[str, Any]: ...
 
     @abstractmethod
-    def tool_results_message(self, results: list[tuple[ToolCall, str, bool]]) -> list[dict[str, Any]]:
-        """Return the message(s) carrying tool results back to the model."""
+    def tool_results_message(self, results: list[tuple[ToolCall, str, bool]],
+                             nudge: str | None = None) -> list[dict[str, Any]]:
+        """Return the message(s) carrying tool results back to the model.
+
+        *nudge* is a short instruction for the next turn (e.g. the documented batching
+        sentence). Providers place it where their API expects it; it must never edit
+        earlier messages (append-only history).
+        """
+
+    def effort_message(self, effort: str) -> dict[str, Any] | None:
+        """Message that switches effort from the next user turn on; None when unsupported."""
+        return None
 
     @abstractmethod
     def build_request(self, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:

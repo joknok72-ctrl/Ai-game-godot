@@ -157,5 +157,75 @@ class VersionGuardTests(unittest.TestCase):
         self.assertFalse(version_matches("4.8.1.stable.official.abc", eng))
 
 
+class HarnessControlTests(unittest.TestCase):
+    """New Fable 5.1 harness fields: defaults, validation and env overrides."""
+
+    def test_defaults_keep_beta_features_off(self):
+        a = repo_config().agent
+        self.assertEqual(a.effort, "max")
+        self.assertIsNone(a.act_effort)
+        self.assertTrue(a.batch_nudge)
+        self.assertTrue(a.long_output_note)
+        self.assertFalse(a.progress_updates)
+        self.assertFalse(a.turn_scoped_system)
+        self.assertIsNone(a.task_budget_tokens)
+        self.assertFalse(a.prefix_binding_drop)
+        self.assertEqual(a.route, "direct")
+        self.assertFalse(a.uses_beta)
+        self.assertTrue(AgentConfig(progress_updates=True).uses_beta)
+        self.assertTrue(AgentConfig(act_effort="high").uses_beta)
+        self.assertFalse(AgentConfig(act_effort="max").uses_beta)
+
+    def test_validation(self):
+        with self.assertRaises(ConfigError):
+            AgentConfig(act_effort="ultra")
+        with self.assertRaises(ConfigError):
+            AgentConfig(task_budget_tokens=1000)
+        AgentConfig(task_budget_tokens=20_000)
+        with self.assertRaises(ConfigError):
+            AgentConfig(route="tor")
+        with self.assertRaises(ConfigError):
+            AgentConfig(route="workers_ai", provider="anthropic")
+        AgentConfig(route="workers_ai", provider="openai_compat")
+        AgentConfig(route="cf_gateway")
+
+    def test_env_overrides_for_harness_controls(self):
+        env = {
+            "GODOTAI_ACT_EFFORT": "high", "GODOTAI_ROUTE": "cf_gateway", "GODOTAI_PROGRESS_UPDATES": "1",
+            "GODOTAI_BATCH_NUDGE": "off", "GODOTAI_TURN_SCOPED_SYSTEM": "true", "GODOTAI_PREFIX_BINDING_DROP": "yes",
+            "GODOTAI_LONG_OUTPUT_NOTE": "0", "GODOTAI_TASK_BUDGET": "150000",
+        }
+        with mock.patch.dict(os.environ, env):
+            a = load_config(REPO / "godot.toml").agent
+        self.assertEqual(a.act_effort, "high")
+        self.assertEqual(a.route, "cf_gateway")
+        self.assertTrue(a.progress_updates)
+        self.assertFalse(a.batch_nudge)
+        self.assertTrue(a.turn_scoped_system)
+        self.assertTrue(a.prefix_binding_drop)
+        self.assertFalse(a.long_output_note)
+        self.assertEqual(a.task_budget_tokens, 150_000)
+        self.assertTrue(a.uses_beta)
+        with mock.patch.dict(os.environ, {"GODOTAI_TASK_BUDGET": "lots"}):
+            with self.assertRaises(ConfigError):
+                load_config(REPO / "godot.toml")
+        with mock.patch.dict(os.environ, {"GODOTAI_TASK_BUDGET": "5"}):
+            with self.assertRaises(ConfigError):
+                load_config(REPO / "godot.toml")
+        with mock.patch.dict(os.environ, {"GODOTAI_TASK_BUDGET": "0"}):   # 0 = off, as documented in godot.toml
+            self.assertIsNone(load_config(REPO / "godot.toml").agent.task_budget_tokens)
+
+    def test_godot_toml_documents_every_harness_key(self):
+        # The commented example block in godot.toml must stay in sync with AgentConfig.
+        text = (REPO / "godot.toml").read_text(encoding="utf-8")
+        for key in ("route", "act_effort", "batch_nudge", "long_output_note", "progress_updates",
+                    "turn_scoped_system", "task_budget_tokens", "prefix_binding_drop"):
+            self.assertRegex(text, rf"(?m)^#?\s*{key}\s*=", key)
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "godot.toml"
+            p.write_text(text.replace("# task_budget_tokens = 0", "task_budget_tokens = 0"), encoding="utf-8")
+            self.assertIsNone(load_config(p).agent.task_budget_tokens)
+
+
 if __name__ == "__main__":
     unittest.main()

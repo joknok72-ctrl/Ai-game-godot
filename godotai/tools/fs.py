@@ -8,7 +8,10 @@ from typing import Any
 from .base import ToolContext, ToolRegistry, ToolResult
 
 MAX_READ_CHARS = 60_000
-SECRET_GLOBS = ("*.keystore", "*.jks", "*.pem", "*.p12", ".env", ".env.*", "*.key")
+# Files the model may neither read nor write inside a project: signing material and
+# credential stores (Android keystores, PEM/PKCS12, dotenv, Kaggle/Cloudflare/GitHub token files).
+SECRET_GLOBS = ("*.keystore", "*.jks", "*.pem", "*.p12", ".env", ".env.*", "*.key", "*.token",
+                "kaggle.json", "access_token", ".netrc", "credentials.json", "service-account*.json", "*.secret")
 BINARY_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".ogg", ".wav", ".mp3", ".ttf", ".otf", ".apk", ".aab", ".pck", ".zip", ".import"}
 
 

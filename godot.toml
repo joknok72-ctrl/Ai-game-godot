@@ -45,3 +45,17 @@ max_verify_rounds = 4         # how many fix-and-re-verify cycles before giving 
 verify_frames = 120           # frames the game is run headless during verification
 require_plan_approval = true  # human gate between PLAN and ACT (CLI --yes skips it)
 strict_tools = false          # send strict:true on tool schemas (Claude strict tool use); off by default
+
+# --- Harness controls modelled on how Claude Fable 5.1 is driven (docs read 2026-09-26, see docs/RESEARCH.md).
+# All optional; the values below are the defaults. Env override in parentheses.
+# route = "direct"            # direct | cf_gateway | workers_ai  (GODOTAI_ROUTE). cf_gateway = Cloudflare AI Gateway in front of the
+#                             # same provider (logs/caching/rate limits, needs CF_ACCOUNT_ID + CF_AIG_GATEWAY, optional CF_AIG_TOKEN);
+#                             # workers_ai = Cloudflare-hosted open-weight models via the OpenAI-compatible endpoint
+#                             # (provider must be openai_compat, needs CF_ACCOUNT_ID + CLOUDFLARE_API_TOKEN). No credential is read from this file.
+# act_effort = "max"          # effort from plan approval onward, e.g. "high" to save tokens in the ACT phase (GODOTAI_ACT_EFFORT)
+# batch_nudge = true          # one-sentence reminder after tool results: batch independent tool calls (GODOTAI_BATCH_NUDGE)
+# long_output_note = true     # tell the model the real max_tokens at xhigh/max so it does not self-truncate (GODOTAI_LONG_OUTPUT_NOTE)
+# progress_updates = false    # beta: short status lines between tool calls (GODOTAI_PROGRESS_UPDATES)
+# turn_scoped_system = false  # beta: nudges as turn-scoped system messages instead of text (GODOTAI_TURN_SCOPED_SYSTEM)
+# task_budget_tokens = 0      # beta: advisory whole-task token budget, minimum 20000; 0/unset = off (GODOTAI_TASK_BUDGET)
+# prefix_binding_drop = false # beta debugging aid: drop and report thinking blocks whose prefix changed (GODOTAI_PREFIX_BINDING_DROP)

@@ -1,0 +1,16 @@
+{
+  "id": "godot3-migration-trap",
+  "title": "Port a Godot-3 style script the user pasted (must produce Godot 4.7 code)",
+  "tags": ["migration", "api-grounding", "2d"],
+  "template": "mobile-2d",
+  "prompt": "A friend sent me this Godot 3 script for a coin pickup. Add it to my game as scripts/coin.gd + scenes/coin.tscn (Area2D with a CollisionShape2D and a ColorRect), spawn 3 coins from main.gd at random x above the screen, +10 score on pickup. Their script:\n\nextends Area2D\nexport var value = 10\nonready var sprite = $Sprite\nsignal collected(value)\nfunc _ready():\n    connect(\"body_entered\", self, \"_on_body_entered\")\n    connect(\"area_entered\", self, \"_on_body_entered\")\nfunc _on_body_entered(body):\n    emit_signal(\"collected\", value)\n    yield(get_tree().create_timer(0.1), \"timeout\")\n    queue_free()\n\nMake it correct for Godot 4.7.2 and keep godot_verify passing.",
+  "checks": [
+    {"type": "file_exists", "path": "scripts/coin.gd"},
+    {"type": "file_exists", "path": "scenes/coin.tscn"},
+    {"type": "content_regex", "path": "scripts/coin.gd", "pattern": "@export"},
+    {"type": "content_regex", "path": "scripts/coin.gd", "pattern": "await|\\.connect\\("},
+    {"type": "no_script_regex", "pattern": "\\byield\\s*\\(|^\\s*export var|^\\s*onready var|connect\\(\"[a-z_]+\", self, \""},
+    {"type": "no_api_lint_errors"},
+    {"type": "smoke_test"}
+  ]
+}

@@ -5,6 +5,7 @@
 - Linux x86_64 (the pinned editor build), Python **3.11+** (uses `tomllib`), `unzip`/`git` for GitHub tools.
 - For Android export: OpenJDK 17 (`sudo apt install openjdk-17-jdk-headless`), ~3 GB disk for SDK + templates.
 - A model API key: `ANTHROPIC_API_KEY` (default provider) **or** an OpenAI-compatible server.
+  Credentials are read from environment variables only — never from files in the repo (see `SECURITY.md`).
 
 ## Commands
 
@@ -17,6 +18,16 @@ python3 -m godotai verify --project DIR [--frames N] [--no-lint] [--json report.
 python3 -m godotai export --project DIR [--preset Android] [--out build/android/game.apk] [--release]
 python3 -m godotai plan "task" --workspace DIR                 # THINK + PLAN only, writes .godotai/PLAN.md
 python3 -m godotai run  "task" --workspace DIR [--yes] [--no-github]
+
+python3 -m godotai apiref build [--docs-dir godot/doc/classes] [--force]   # ClassDB index from the pinned binary (~2 s)
+python3 -m godotai apiref lookup CharacterBody2D move_and_slide           # exact signature, inherited members resolved
+python3 -m godotai apiref search "change scene"                            # find the API when you only know the intent
+python3 -m godotai apiref lint --project DIR                               # Godot-3 idioms / unknown classes & methods
+python3 -m godotai eval list                                               # engine-verified task bank
+python3 -m godotai eval run --task flappy-clone --workspace DIR [--yes]    # run the agent on a task, then score
+python3 -m godotai eval score --task template-baseline --project DIR       # score an existing project (no model)
+python3 -m godotai dataset extract --runs DIR --out data/sft.jsonl [--include-failed]   # verified runs → SFT JSONL
+python3 scripts/secret_scan.py [PATH]                                      # token-shaped strings in a tree (CI step)
 ```
 
 `run` prints the plan and asks `Approve this plan? [y]es / [n]o + feedback`. Saying `n` sends your feedback
@@ -39,6 +50,17 @@ to the model and it re-plans. `--yes` auto-approves (for CI / unattended contain
 | `agent.require_plan_approval` | human gate on/off | — |
 | `agent.strict_tools` | send `strict: true` on tool schemas | — |
 | `agent.base_url` | custom endpoint | `GODOTAI_BASE_URL` |
+| `agent.route` | `direct` (default) · `cf_gateway` (Cloudflare AI Gateway) · `workers_ai` (Cloudflare Workers AI, needs `openai_compat`) | `GODOTAI_ROUTE` |
+| `agent.act_effort` | effort from plan approval onward (per-message effort, beta); unset = same as `effort` | `GODOTAI_ACT_EFFORT` |
+| `agent.batch_nudge` | one-line reminder after tool results to batch independent calls (default on) | `GODOTAI_BATCH_NUDGE` |
+| `agent.long_output_note` | tell the model the real `max_tokens` at `xhigh`/`max` (default on) | `GODOTAI_LONG_OUTPUT_NOTE` |
+| `agent.progress_updates` | beta: short status lines between tool calls in the run log | `GODOTAI_PROGRESS_UPDATES` |
+| `agent.turn_scoped_system` | beta: nudges as turn-scoped `system` messages instead of text | `GODOTAI_TURN_SCOPED_SYSTEM` |
+| `agent.task_budget_tokens` | beta: advisory whole-task token budget (≥ 20000; 0/unset = off) | `GODOTAI_TASK_BUDGET` |
+| `agent.prefix_binding_drop` | beta debugging aid for preserved-thinking prefix mismatches | `GODOTAI_PREFIX_BINDING_DROP` |
+
+All of these are documented (commented) in `godot.toml`; the beta ones add the corresponding `anthropic-beta`
+header only when enabled, so a default configuration sends a plain, non-beta request.
 
 ### Using an open-source model instead of Claude
 
@@ -47,6 +69,29 @@ export GODOTAI_PROVIDER=openai_compat GODOTAI_MODEL=qwen3-coder OPENAI_BASE_URL=
 python3 -m godotai run "make a flappy-bird clone for Android" --workspace ./flappy --yes
 ```
 `GODOTAI_SEND_REASONING_EFFORT=1` forwards the effort level as `reasoning_effort` for servers that support it.
+A LoRA adapter produced by `training/train_qlora.py` is served the same way (vLLM/llama.cpp/Ollama) — see
+`training/README.md`; `python3 -m godotai eval run` is how you find out whether it is actually better.
+
+### Routing through Cloudflare (optional)
+
+Nothing about your Cloudflare account is stored in the repository; set variables and pick a route:
+
+```bash
+# Claude via Cloudflare AI Gateway (logs, caching, rate limits, cost dashboard):
+export CF_ACCOUNT_ID=<account id>            # identifier, not a secret
+export CF_AIG_GATEWAY=<gateway name>         # created in the Cloudflare dashboard → AI → AI Gateway
+export ANTHROPIC_API_KEY=...                 # pass-through; or store the key in the gateway (BYOK) and
+export CF_AIG_TOKEN=...                      #   send only the authenticated-gateway token instead
+GODOTAI_ROUTE=cf_gateway python3 -m godotai run "..." --workspace ./g
+
+# Cloudflare-hosted open-weight model (Workers AI, OpenAI-compatible endpoint):
+export CLOUDFLARE_API_TOKEN=...              # scoped token with Workers AI permission only
+GODOTAI_ROUTE=workers_ai GODOTAI_PROVIDER=openai_compat GODOTAI_MODEL=<workers-ai model id> \
+    python3 -m godotai eval run --task template-baseline --workspace /tmp/eval
+```
+
+Endpoints/headers follow the Cloudflare docs read on 2026-09-26 (`docs/RESEARCH.md` §4). The gateway does not
+make a model smarter; treat a Workers AI model as a candidate to *measure*, not a drop-in.
 
 ## Android export
 
@@ -78,6 +123,8 @@ Release APK (GitHub Actions): add repository secrets `ANDROID_KEYSTORE_BASE64` (
 
 - Plan: `<workspace>/.godotai/PLAN.md`; engine report: `<workspace>/.godotai/last_verification.md`;
   full transcript: `<workspace>/.godotai/runs/*.json` (git-ignored — it contains the whole conversation).
+- API index: `~/.cache/godotai/apiref/<engine-tag>/index.json` (rebuilt from the binary in ~2 s).
+- Eval results: `evals/results/*.json`; extracted datasets: `data/*.jsonl` (both git-ignored).
 - APK: `<workspace>/build/android/*.apk` (git-ignored). GitHub artifacts: `android-apk-debug|release`.
 
 ## Troubleshooting
@@ -89,3 +136,6 @@ Release APK (GitHub Actions): add repository secrets `ANDROID_KEYSTORE_BASE64` (
 | Export fails with Java/SDK path errors | `python3 -m godotai setup-android`; check `~/.config/godot/editor_settings-4.7.tres`. |
 | `POLICY: no file/system changes are allowed before a plan is approved` in the transcript | Expected — the model tried to skip planning and was blocked. |
 | Plan rejected: `godot_version must be 4.7.2-stable` | The model targeted another version; it is told to fix it automatically. |
+| `api_lint`: `KinematicBody2D → CharacterBody2D` or `unknown method … on <Class>` | Godot-3 API or a typo. Errors block the eval task; warnings on user-defined symbols are advisory. |
+| `CF_ACCOUNT_ID is not set (needed for this route)` | `route = cf_gateway`/`workers_ai` needs the variables listed above; use `route = direct` otherwise. |
+| `secret-scan: N finding(s)` in CI | A token-shaped string was committed. Rotate it, remove it, or mark a deliberate placeholder line with `secret-scan:allow`. |

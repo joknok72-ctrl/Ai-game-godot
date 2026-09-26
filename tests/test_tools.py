@@ -116,9 +116,10 @@ class SafePathTests(unittest.TestCase):
                 safe_path(ws, bad)
 
     def test_secret_names(self):
-        for n in ("release.keystore", "debug.jks", "key.pem", ".env", ".env.local", "cert.p12", "private.key"):
+        for n in ("release.keystore", "debug.jks", "key.pem", ".env", ".env.local", "cert.p12", "private.key",
+                  "kaggle.json", "access_token", ".netrc", "gateway.token", "credentials.json", "service-account-prod.json"):
             self.assertTrue(is_secret_name(n), n)
-        for n in ("player.gd", "main.tscn", "export_presets.cfg", "env.gd", "keystore_notes.md"):
+        for n in ("player.gd", "main.tscn", "export_presets.cfg", "env.gd", "keystore_notes.md", "tokens.gd", "secrets.md"):
             self.assertFalse(is_secret_name(n), n)
 
 
@@ -191,11 +192,13 @@ class CommandPolicyTests(unittest.TestCase):
         import os
         from unittest import mock
         with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-x", "GITHUB_TOKEN": "ghp_x",
-                                          "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD": "p", "HOME_SAFE": "1"}):
+                                          "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD": "p", "HOME_SAFE": "1",
+                                          "KAGGLE_API_TOKEN": "k", "KAGGLE_KEY": "k", "CLOUDFLARE_API_TOKEN": "c",
+                                          "CF_AIG_TOKEN": "g", "GOOGLE_APPLICATION_CREDENTIALS": "/x.json"}):
             env = scrubbed_env()
-        self.assertNotIn("ANTHROPIC_API_KEY", env)
-        self.assertNotIn("GITHUB_TOKEN", env)
-        self.assertNotIn("GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD", env)
+        for name in ("ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD", "KAGGLE_API_TOKEN",
+                     "KAGGLE_KEY", "CLOUDFLARE_API_TOKEN", "CF_AIG_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS"):
+            self.assertNotIn(name, env)
         self.assertIn("HOME_SAFE", env)
 
     def test_run_command_rejects_unlisted_binary(self):
