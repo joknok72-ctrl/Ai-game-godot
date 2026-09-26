@@ -48,6 +48,11 @@ training/kaggle/output/
 .cache/
 apiref-cache/
 
+# Node — only the optional UI smoke test (tests/ui) needs a dependency (jsdom); install it outside the tree
+node_modules/
+package.json
+package-lock.json
+
 # Editor / OS noise
 .idea/
 .vscode/

@@ -52,7 +52,11 @@ class DetectionTests(unittest.TestCase):
         for line in (f"export KAGGLE_API_TOKEN={FAKE_KAGGLE}", f"CLOUDFLARE_API_TOKEN: '{FAKE_CF}'",
                      f'ANTHROPIC_API_KEY = "{FAKE_ANTHROPIC}"', f"cf_aig_token={FAKE_CF}",
                      "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=" "correct-horse-battery",
-                     f"api_key = {'z' * 30}"):
+                     f"api_key = {'z' * 30}",
+                     # the deploy/cloudflare path adds two more credential names: the tunnel token that cloudflared
+                     # receives and the chat server's bearer token (both must only ever live in an untracked .env)
+                     f"TUNNEL_TOKEN={'e' * 40}", f"export CLOUDFLARE_TUNNEL_TOKEN='{'e' * 40}'",
+                     f"CF_TUNNEL_TOKEN: {'e' * 40}", f"GODOTAI_CHAT_TOKEN={'s' * 24}"):
             self.assertTrue(self.kinds(line), line)
 
     def test_placeholders_and_names_are_not_secrets(self):
@@ -70,6 +74,10 @@ class DetectionTests(unittest.TestCase):
             "cache_control: {type: ephemeral}",
             "api_key: str | None = None",
             "KAGGLE_API_TOKEN={{ secrets.KAGGLE_API_TOKEN }}",
+            "TUNNEL_TOKEN=${TUNNEL_TOKEN}",
+            "TUNNEL_TOKEN=<paste the tunnel token written by cloudflare_setup.py>",
+            "GODOTAI_CHAT_TOKEN=<choose-a-secret>",
+            "- TUNNEL_TOKEN",
         ]
         for line in clean:
             self.assertEqual(self.kinds(line), [], line)

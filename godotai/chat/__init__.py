@@ -10,13 +10,15 @@ buttons; the engine verification report is shown as the model produces it.
 """
 from __future__ import annotations
 
-from .server import ChatServer, ChatServerError, is_loopback
+from .access import AccessError, AccessVerifier
+from .server import ChatServer, ChatServerError, is_loopback, valid_public_host
 from .session import (Session, SessionBusy, SessionError, SessionManager, SessionNotReady, NoPendingPlan,
                       slugify)
 from .status import environment_status, model_ready
 
 __all__ = [
-    "ChatServer", "ChatServerError", "is_loopback",
+    "AccessError", "AccessVerifier",
+    "ChatServer", "ChatServerError", "is_loopback", "valid_public_host",
     "Session", "SessionBusy", "SessionError", "SessionManager", "SessionNotReady", "NoPendingPlan", "slugify",
     "environment_status", "model_ready",
 ]

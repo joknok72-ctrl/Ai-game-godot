@@ -22,7 +22,9 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from _helpers import repo_config, valid_plan
+from dataclasses import replace
+
+from _helpers import PRIVATE_ENV, fake_probe, repo_config, valid_plan, vendor_config, vendor_identity
 from test_agent_loop import FakeVerify, ScriptedProvider, make_registry
 
 from godotai import __main__ as cli
@@ -61,12 +63,14 @@ class ScriptedRuns:
 class ServerFixture:
     """A ChatServer on 127.0.0.1:<ephemeral> with injected provider/registry/readiness."""
 
-    def __init__(self, cfg, provider_factory, verify: FakeVerify | None = None, ready=READY, token=None, host="127.0.0.1"):
+    def __init__(self, cfg, provider_factory, verify: FakeVerify | None = None, ready=READY, token=None, host="127.0.0.1",
+                 probe=None, **server_kw):
         self.tmp = Path(tempfile.mkdtemp(prefix="godotai-chat-"))
         self.verify = verify or FakeVerify()
         manager = SessionManager(cfg, self.tmp / "games", provider_factory=provider_factory,
                                  registry_factory=lambda: make_registry(self.verify), ready_check=lambda: ready)
-        self.server = ChatServer(cfg, self.tmp / "games", host=host, port=0, token=token, manager=manager)
+        self.server = ChatServer(cfg, self.tmp / "games", host=host, port=0, token=token, manager=manager,
+                                 probe=probe or fake_probe(), **server_kw)
         self.thread = self.server.start_in_thread()
         self.token = token
 
@@ -506,28 +510,101 @@ class SessionUnitTests(unittest.TestCase):
         self.assertEqual(snap["messages"], 1)
         self.assertEqual(fresh.events_since(1)[0]["type"], "done")
 
-    def test_status_module(self):
+    def test_status_module_vendor_opt_in(self):
+        vc = vendor_config()
         with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "", "CF_AIG_TOKEN": ""}, clear=False):
-            ready, ar, en = model_ready(self.cfg)
+            ready, ar, en = model_ready(vc)
         self.assertFalse(ready)
         self.assertIn("export ANTHROPIC_API_KEY", ar)
         self.assertIn("python3 -m godotai chat", en)
         with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x"}):
-            self.assertTrue(model_ready(self.cfg)[0])
-        from dataclasses import replace
-        oc = replace(self.cfg, agent=replace(self.cfg.agent, provider="openai_compat"))
-        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "", "OPENAI_BASE_URL": ""}):
-            self.assertFalse(model_ready(oc)[0])
-        with mock.patch.dict(os.environ, {"OPENAI_BASE_URL": "http://localhost:11434/v1"}):
-            self.assertTrue(model_ready(oc)[0], "a local server needs no key")
+            self.assertTrue(model_ready(vc)[0])
         with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "x", "GITHUB_TOKEN": ""}):
-            st = environment_status(self.cfg)
-        self.assertEqual(st["engine"]["pinned"], self.cfg.engine.tag)
+            st = environment_status(vc)
+        self.assertEqual(st["engine"]["pinned"], vc.engine.tag)
         self.assertIn("templates_dir", st["engine"])
         self.assertTrue(st["model"]["ready"])
         self.assertTrue(st["model"]["key_set"])
+        self.assertFalse(st["model"]["private"])
+        self.assertFalse(st["model"]["server"]["probed"], "vendor APIs are never probed from here")
+        self.assertEqual(st["model"]["identity"]["kind"], "vendor_api")
+        self.assertFalse(st["model"]["identity"]["yours"])
         self.assertFalse(st["github_token_set"])
         self.assertIn("export_possible", st["android"])
+        # openai_compat at the vendor URL is key-gated too (the identity check reads the same env as `endpoint`)
+        with mock.patch.dict(os.environ, {**PRIVATE_ENV, "OPENAI_API_KEY": "sk-test"}):
+            oc = replace(self.cfg, agent=replace(self.cfg.agent, model="gpt-x"), model=vendor_identity("gpt-x"))
+            self.assertTrue(model_ready(oc)[0])
+            self.assertEqual(environment_status(oc)["model"]["key_env"], "OPENAI_API_KEY")
+
+    def test_status_module_private_server_is_probed(self):
+        """The default (your server) is *checked*, not assumed: unreachable → clear start-up hint, no send."""
+        cfg = self.cfg
+        with mock.patch.dict(os.environ, PRIVATE_ENV):
+            ready, ar, en = model_ready(cfg, fake_probe(reachable=False))
+            self.assertFalse(ready)
+            self.assertIn("vllm serve Qwen/Qwen2.5-Coder-7B-Instruct --served-model-name godotai", en)
+            self.assertIn("ollama", en)
+            self.assertIn("http://127.0.0.1:8000/v1", ar)
+            self.assertIn("vllm serve", ar)
+            ready, _, en = model_ready(cfg, fake_probe(reachable=True, authorized=False))
+            self.assertFalse(ready)
+            self.assertIn("401/403", en)
+            self.assertTrue(model_ready(cfg, fake_probe())[0])
+            st = environment_status(cfg, fake_probe(models=("godotai", "other")))
+            m = st["model"]
+            self.assertTrue(m["private"])
+            self.assertIsNone(m["key_env"], "your own server: no vendor key involved")
+            self.assertEqual(m["base_url"], "http://127.0.0.1:8000/v1")
+            self.assertEqual(m["server"], {"probed": True, "reachable": True, "models": ["godotai", "other"],
+                                           "model_listed": True, "error": None})
+            self.assertEqual(m["identity"]["kind"], "open_weight_deployment")
+            self.assertTrue(m["identity"]["yours"])
+            self.assertIn("not trained by you", m["identity"]["disclosure_en"])
+            self.assertIsNone(m["identity"]["quality_claim"])
+            st = environment_status(cfg, fake_probe(models=("something-else",)))
+            self.assertFalse(st["model"]["server"]["model_listed"], "configured model missing from /models is flagged")
+            self.assertTrue(st["model"]["ready"], "…but the server is up, so sending is allowed (the server decides)")
+            # OPENAI_BASE_URL retargets the probe (e.g. Ollama)
+            seen: list[str] = []
+
+            def spy(url):
+                seen.append(url)
+                return fake_probe()(url)
+            with mock.patch.dict(os.environ, {"OPENAI_BASE_URL": "http://localhost:11434/v1"}):
+                self.assertTrue(model_ready(cfg, spy)[0], "a local server needs no key")
+            self.assertEqual(seen, ["http://localhost:11434/v1"])
+            with mock.patch.dict(os.environ, {"GODOTAI_SKIP_MODEL_PROBE": "1"}):
+                st = environment_status(cfg, fake_probe(reachable=False))
+                self.assertTrue(st["ready"])
+                self.assertFalse(st["model"]["server"]["probed"])
+
+    def test_probe_cache_and_real_probe_on_closed_port(self):
+        from godotai.chat import status as status_mod
+        status_mod.clear_probe_cache()
+        calls = []
+
+        def counting(url):
+            calls.append(url)
+            return fake_probe()(url)
+        with mock.patch.object(status_mod, "probe_openai_endpoint", counting):
+            status_mod.cached_probe("http://x/v1")
+            status_mod.cached_probe("http://x/v1")
+            self.assertEqual(len(calls), 1, "second real probe within the TTL is served from the cache")
+            status_mod.cached_probe("http://x/v1", counting)
+            self.assertEqual(len(calls), 2, "an injected probe bypasses the cache")
+        status_mod.clear_probe_cache()
+        # a real probe against a port nobody listens on: reachable = False, no exception, no hang
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        r = status_mod.probe_openai_endpoint(f"http://127.0.0.1:{port}/v1", timeout=1.0)
+        self.assertFalse(r["reachable"])
+        self.assertEqual(r["models"], [])
+        with mock.patch.dict(os.environ, PRIVATE_ENV):
+            st = environment_status(self.cfg, fake_probe())
         if not st["engine"]["ok"]:
             self.assertIn("install-godot", st["engine"]["hint_ar"])
 
@@ -566,15 +643,47 @@ class CliChatTests(unittest.TestCase):
     def test_chat_check_mode_prints_url_and_readiness(self):
         tmp = Path(tempfile.mkdtemp(prefix="godotai-cli-chat-"))
         out = io.StringIO()
-        with redirect_stdout(out):
+        with mock.patch.dict(os.environ, {**PRIVATE_ENV, "GODOTAI_SKIP_MODEL_PROBE": "1"}), redirect_stdout(out):
             rc = cli.main(["chat", "--port", "0", "--games-dir", str(tmp / "games"), "--check"])
         self.assertEqual(rc, 0)
         text = out.getvalue()
         self.assertIn("Open this URL in your browser: http://127.0.0.1:", text)
         self.assertIn("افتح هذا العنوان", text)
-        self.assertIn("model key (", text)
+        self.assertIn("➖ your model server (http://127.0.0.1:8000/v1): not probed", text,
+                      "a skipped probe must not be shown as a pass")
+        self.assertIn("model identity: godotai — private deployment of an open-weight model (base Qwen/Qwen2.5-Coder-7B-Instruct, Apache-2.0)", text)
         self.assertIn("Godot 4.7.2-stable", text)
         self.assertTrue((tmp / "games").is_dir())
+        # the vendor opt-in still prints the key line
+        out = io.StringIO()
+        env = {**PRIVATE_ENV, "GODOTAI_PROVIDER": "anthropic", "GODOTAI_MODEL": "claude-fable-5-1", "GODOTAI_MODEL_KIND": "vendor_api",
+               "GODOTAI_SERVING": "vendor", "GODOTAI_BASE_MODEL": "claude-fable-5-1", "ANTHROPIC_API_KEY": ""}
+        with mock.patch.dict(os.environ, env), redirect_stdout(out):
+            rc = cli.main(["chat", "--port", "0", "--games-dir", str(tmp / "games"), "--check"])
+        self.assertEqual(rc, 0)
+        self.assertIn("model key (ANTHROPIC_API_KEY): not set", out.getvalue())
+        self.assertIn("third-party vendor model via API", out.getvalue())
+
+    def test_chat_public_host_and_access_flags(self):
+        tmp = Path(tempfile.mkdtemp(prefix="godotai-cli-chat-"))
+        with self.assertRaises(SystemExit) as cm:
+            with redirect_stdout(io.StringIO()):
+                cli.main(["chat", "--port", "0", "--games-dir", str(tmp), "--access-team-domain", "acme", "--check"])
+        self.assertIn("GODOTAI_ACCESS_AUD", str(cm.exception), "team domain without AUD is refused")
+        with self.assertRaises(SystemExit) as cm:
+            with redirect_stdout(io.StringIO()):
+                cli.main(["chat", "--port", "0", "--games-dir", str(tmp), "--public-host", "http://bad host", "--check"])
+        self.assertIn("hostname", str(cm.exception))
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {**PRIVATE_ENV, "GODOTAI_SKIP_MODEL_PROBE": "1"}), redirect_stdout(out):
+            rc = cli.main(["chat", "--host", "0.0.0.0", "--port", "0", "--games-dir", str(tmp), "--check",
+                           "--public-host", "games.example.com", "--access-team-domain", "acme",
+                           "--access-aud", "a" * 64])
+        self.assertEqual(rc, 0)
+        text = out.getvalue()
+        self.assertIn("public hostname(s) accepted in Host header: games.example.com", text)
+        self.assertIn("Cloudflare Access required on every request — team acme.cloudflareaccess.com", text)
+        self.assertNotIn("a" * 64, text, "the AUD tag is only ever shown truncated")
 
     def test_chat_refuses_public_bind_without_token(self):
         with self.assertRaises(SystemExit) as cm:

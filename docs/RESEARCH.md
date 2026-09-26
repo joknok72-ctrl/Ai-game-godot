@@ -148,6 +148,64 @@ https://developers.cloudflare.com/fundamentals/api/get-started/create-token/ .
   model can drive this tool loop must be **measured** with `python3 -m godotai eval run` — not assumed.
 - **Status:** URL/header construction is unit-tested; **no request was sent to Cloudflare** from this repo.
 
+### 4.1 Cloudflare Tunnel + Access as the way to publish the chat (added 2026-09-26)
+
+Sources (read 2026-09-26): https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/ ,
+https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/subresources/configurations/ ,
+https://developers.cloudflare.com/api/resources/zero_trust/subresources/tunnels/subresources/cloudflared/subresources/token/ ,
+https://developers.cloudflare.com/api/resources/zero_trust/subresources/access/subresources/applications/ ,
+https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/remote-management/ ,
+https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/ ,
+https://developers.cloudflare.com/cloudflare-one/identity/authorization-cookie/validating-json/ ,
+https://developers.cloudflare.com/api/resources/dns/subresources/records/ .
+
+- **[verified]** Remotely-managed tunnel: `POST /accounts/{account_id}/cfd_tunnel` with `{"name", "config_src": "cloudflare"}`
+  returns the tunnel `id` and a **connector token**; the same token is available later via
+  `GET /accounts/{account_id}/cfd_tunnel/{tunnel_id}/token`. `cloudflared tunnel run` takes it from the `TUNNEL_TOKEN`
+  environment variable (the compose file uses that, never a command-line flag).
+- **[verified]** Ingress: `PUT /accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations` with
+  `{"config": {"ingress": [{"hostname", "service", "originRequest": {...}}, {"service": "http_status:404"}]}}` — the
+  catch-all rule **must** be last; *Protect with Access* is `originRequest.access = {"required": true, "teamName",
+  "audTag": [...]}`.
+- **[verified]** DNS for the hostname: a **proxied CNAME** to `<tunnel id>.cfargotunnel.com`
+  (`POST /zones/{zone_id}/dns_records`).
+- **[verified]** Access application: `POST /accounts/{account_id}/access/apps` with `type: "self_hosted"`, `domain`,
+  `destinations`, `session_duration`, and inline `policies` (`decision: "allow"`, `include: [{"email": {"email": …}}]`);
+  the response carries the application's **AUD** tag. The docs recommend creating the Access application **before**
+  publishing the hostname so it is never reachable unauthenticated — `cloudflare_setup.py` follows that order.
+- **[verified]** Validating the JWT at the origin: Access sends `Cf-Access-Jwt-Assertion` (header) / `CF_Authorization`
+  (cookie); verify RS256 against `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`, check `iss` =
+  `https://<team>.cloudflareaccess.com`, `aud` contains the application AUD, `exp`. Cloudflare explicitly asks origins to
+  validate the token themselves in addition to the edge check → `godotai/chat/access.py`.
+- **[assumption]** Pricing: Zero Trust Free covers up to 50 users, Tunnel is free — read on the pricing pages the same
+  day; check before relying on it.
+- **Status:** `scripts/cloudflare_setup.py` is exercised with a fake transport and `--dry-run` in tests/CI; the JWT
+  verifier with a stdlib-generated test RSA key; **no live Cloudflare API call, tunnel, DNS record or Access application
+  was created from this repository**, and no user credential was used.
+
+### 4.2 A private, Godot-only model: what is realistic (added 2026-09-26)
+
+Sources (read 2026-09-26): https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct (model card + LICENSE: **Apache-2.0**),
+https://docs.vllm.ai/en/latest/features/tool_calling.html (Qwen2.5 → `--enable-auto-tool-choice --tool-call-parser hermes`;
+Qwen3-Coder → `qwen3_xml`), https://docs.vllm.ai/en/latest/features/lora.html (`--enable-lora --lora-modules name=path`),
+https://support.claude.com/en/articles/12326764-can-i-use-my-outputs-to-train-an-ai-model (Anthropic: "We prohibit
+customers from using our services to train or develop AI models without our written permission").
+
+- **[verified]** Legally usable open weights exist for the base (Apache-2.0: commercial use, modification, redistribution
+  with notices). **[caution]** Not every Qwen size/family uses Apache-2.0 (some carry a Qwen/Research licence); Llama uses
+  its own community licence. Read each card before changing `base_model`.
+- **[verified]** vLLM can serve the base under an arbitrary name (`--served-model-name godotai`) and a LoRA adapter under
+  the same name, with OpenAI-style tool calling — which is exactly what `providers/openai_compat.py` speaks.
+- **[verified]** Vendor terms restrict training competing models on service outputs → vendor runs are comparison
+  references only; training data comes from the user's own model's runs (`training/README.md`).
+- **[assumption, deliberately not promised]** Whether a 7 B open-weight model (with or without a fine-tune) can match a
+  frontier vendor model on Godot tasks is unknown; the harness (engine-generated API index, engine verification,
+  engine-judged evals) is where the domain advantage lives, and `eval compare` is the only permitted statement about it.
+- **[fact]** Training a competitive coding model *from scratch* is out of reach for an individual (trillions of tokens,
+  thousands of GPU-hours or far more); the config accepts `kind = "from_scratch"` only with a training report.
+- **Status:** private default, identity disclosure, endpoint probe and `eval compare` are unit-tested offline; **no live
+  model call and no training run** have been made from this repository.
+
 ## 5. Kaggle — a batch GPU, not a server
 
 Sources (read 2026-09-26): https://www.kaggle.com/docs/notebooks , https://www.kaggle.com/docs/tpu ,
