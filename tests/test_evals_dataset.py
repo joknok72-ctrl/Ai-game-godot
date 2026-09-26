@@ -125,7 +125,9 @@ class RunCheckTests(unittest.TestCase):
         from dataclasses import replace
         from unittest import mock
         task = EvalTask("t", "T", "p", checks=({"type": "smoke_test"},))
-        with mock.patch.dict("os.environ", {"GODOT_BIN": str(self.ws / "no-such-godot"), "PATH": str(self.ws)}):
+        # `find_godot_binary` also probes ~/.local/bin/godot (where CI installs the editor) → patch it.
+        with mock.patch.dict("os.environ", {"GODOT_BIN": str(self.ws / "no-such-godot"), "PATH": str(self.ws)}), \
+                mock.patch("godotai.godot.find_godot_binary", return_value=None):
             res = evals.score_project(task, self.ws, replace(CFG))
         self.assertFalse(res.passed)
         self.assertEqual(res.checks[0].name, "engine verification")

@@ -64,8 +64,8 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           python3 -m godotai new --template mobile-2d --dest /tmp/game --name "CI Game" --package com.example.cigame
           python3 -m godotai verify --project /tmp/game --json /tmp/verify.json
-      - name: Engine-verified unit tests (the ones skipped without a binary)
-        run: PATH="$HOME/.local/bin:$PATH" python3 -m unittest discover -s tests -p "test_apiref*.py" -v
+      - name: Full unit-test suite with the real engine (includes the tests skipped without a binary)
+        run: PATH="$HOME/.local/bin:$PATH" python3 -m unittest discover -s tests
       - name: Score the template against the baseline eval task (engine-backed, no LLM)
         run: PATH="$HOME/.local/bin:$PATH" python3 -m godotai eval score --task template-baseline --project /tmp/game
       - uses: actions/upload-artifact@v4

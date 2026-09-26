@@ -105,8 +105,12 @@ class ApiToolsTests(unittest.TestCase):
     def test_index_unavailable_degrades_gracefully(self):
         ctx = make_ctx()
         try:
+            # No cached index and no binary anywhere: `find_godot_binary` also probes fixed install
+            # dirs such as ~/.local/bin/godot (where CI installs the editor), so env tricks alone are
+            # not enough — patch the locator itself.
             with mock.patch.dict(os.environ, {"GODOT_BIN": str(ctx.workspace / "no-godot"), "PATH": str(ctx.workspace),
-                                              "GODOTAI_APIREF_DIR": str(ctx.workspace / "no-cache")}):
+                                              "GODOTAI_APIREF_DIR": str(ctx.workspace / "no-cache")}), \
+                    mock.patch("godotai.godot.find_godot_binary", return_value=None):
                 res = self.reg.execute("api_lookup", {"class_name": "Node"}, ctx)
                 self.assertTrue(res.is_error)
                 self.assertIn("API index unavailable", res.content)
