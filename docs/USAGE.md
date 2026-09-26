@@ -14,6 +14,7 @@
 
 ```
 python3 -m godotai doctor                      # environment vs. the pin (+ your model server + model identity); exit 1 if something is missing
+python3 -m godotai presets [--json]            # hosted Qwen endpoints with a free allowance (GODOTAI_PRESET=…): limits, key variable, data notes, sources — offline
 python3 -m godotai install-godot [--system] [--editor-only] [--bin-dir DIR] [--force]
 python3 -m godotai setup-android [--sdk-root DIR] [--no-packages]
 python3 -m godotai new --template mobile-2d --dest DIR --name "Name" [--package com.x.y] | --list
@@ -21,7 +22,7 @@ python3 -m godotai verify --project DIR [--frames N] [--no-lint] [--json report.
 python3 -m godotai export --project DIR [--preset Android] [--out build/android/game.apk] [--release]
 python3 -m godotai plan "task" --workspace DIR                 # THINK + PLAN only, writes .godotai/PLAN.md
 python3 -m godotai run  "task" --workspace DIR [--yes] [--no-github]
-python3 -m godotai chat [--port 8765] [--games-dir ./games] [--yes] [--no-github] [--open]   # browser chat UI (below)
+python3 -m godotai chat [--port 8765] [--games-dir ./games] [--yes] [--no-github] [--open]   # browser chat UI (below); port: --port → GODOTAI_PORT → PORT (PaaS) → 8765
 python3 -m godotai chat --host 0.0.0.0 --public-host games.example.com \
                         --access-team-domain <team> --access-aud <aud>    # public website behind Cloudflare Tunnel + Access
 
@@ -163,6 +164,8 @@ run per project at a time (**409** while busy).
 | `agent.require_plan_approval` | human gate on/off | — |
 | `agent.strict_tools` | send `strict: true` on tool schemas | — |
 | `agent.route` | `direct` (default) · `cf_gateway` (Cloudflare AI Gateway) · `workers_ai` (Cloudflare Workers AI, needs `openai_compat`) | `GODOTAI_ROUTE` |
+| `agent.preset` | `""` (default) or a hosted free-allowance Qwen endpoint: `openrouter_free` · `groq` · `alibaba_model_studio` · `workers_ai` (`godotai/presets.py`). Sets provider/route/model/base_url **and** the `[model]` identity to *managed* hosting of the named open weights; explicit `GODOTAI_*` variables still win. The key is read from the preset's own variable (`OPENROUTER_API_KEY`, `GROQ_API_KEY`, `DASHSCOPE_API_KEY`, `CF_WORKERS_AI_TOKEN` + `CF_ACCOUNT_ID`) — see `docs/FREE_TIER.md` | `GODOTAI_PRESET` |
+| `engine.platform` | `linux.x86_64` (default) · `linux.arm64` (Oracle Ampere A1 and other ARM hosts) · `linux.x86_32` · `linux.arm32` — the editor asset downloaded and verified | `GODOTAI_ENGINE_PLATFORM` |
 | `agent.act_effort` | effort from plan approval onward (Claude per-message effort, beta); unset = same as `effort` | `GODOTAI_ACT_EFFORT` |
 | `agent.batch_nudge` | one-line reminder after tool results to batch independent calls (default on) | `GODOTAI_BATCH_NUDGE` |
 | `agent.long_output_note` | tell the model the real `max_tokens` at `xhigh`/`max` (default on) | `GODOTAI_LONG_OUTPUT_NOTE` |
@@ -234,6 +237,35 @@ GODOTAI_ROUTE=workers_ai GODOTAI_PROVIDER=openai_compat GODOTAI_MODEL=<workers-a
 
 Endpoints/headers follow the Cloudflare docs read on 2026-09-26 (`docs/RESEARCH.md` §4). The gateway does not
 make a model smarter; treat a Workers AI model as a candidate to *measure*, not a drop-in.
+
+### Hosted Qwen with a free allowance (no GPU, no budget) — `GODOTAI_PRESET`
+
+```bash
+python3 -m godotai presets                                  # what each preset gives, what it costs in requests/tokens, what happens to your data
+export OPENROUTER_API_KEY=<your key>                         # the preset's *own* variable; OPENAI_API_KEY is never used for a preset
+GODOTAI_PRESET=openrouter_free python3 -m godotai chat       # qwen/qwen3.8-27b:free — 20 req/min; 50 req/day until 10 credits were bought once
+GODOTAI_PRESET=groq GROQ_API_KEY=… python3 -m godotai chat   # qwen/qwen3.8-27b (Preview); completions clamped to Groq's 16,384-token cap
+GODOTAI_PRESET=alibaba_model_studio DASHSCOPE_API_KEY=… \
+    GODOTAI_BASE_URL=https://<WorkspaceId>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1 python3 -m godotai chat   # 90-day per-model quota, then pay-as-you-go unless "Free Quota Only" is on
+GODOTAI_PRESET=workers_ai CF_ACCOUNT_ID=… CF_WORKERS_AI_TOKEN=… python3 -m godotai chat   # 10,000 Neurons/day; route becomes workers_ai
+GODOTAI_PRESET=openrouter_free GODOTAI_MODEL=qwen/qwen3.8-27b python3 -m godotai chat     # env beats the preset: the paid variant, same key
+```
+
+Rules the loader enforces: a preset needs `provider = openai_compat` and the preset's route; `[model].serving` can never
+be `self_hosted` while a preset is active (the server is the provider's); a proprietary id on OpenRouter (`openai/…`,
+`anthropic/…`) must be declared `kind = vendor_api`. A hosted preset serves the base weights — your LoRA adapter is not
+involved. `429` answers with `Retry-After` are honoured (capped at 120 s) instead of hammering the free quota. Whether any
+of these models drives the tool loop well enough is answered only by `eval compare` on the same engine-scored tasks.
+
+### Running on a small PaaS host (Railway / Render) — app only
+
+`deploy/paas/Dockerfile` + `deploy/paas/entrypoint.sh`: Python + the pinned headless editor + the chat server, no model,
+no Android toolchain. The chat command reads `PORT` (injected by the platform) and accepts `RAILWAY_PUBLIC_DOMAIN` /
+`RENDER_EXTERNAL_HOSTNAME` in the `Host` header. The entrypoint refuses to start without `GODOTAI_CHAT_TOKEN` (or
+Cloudflare Access variables) and without a model endpoint (`GODOTAI_PRESET` or `GODOTAI_BASE_URL`) — exit code 64.
+Memory measured 2026-09-26 on the template: ≈ 50 MB idle, ≈ 640 MB peak during one verification → 1 GB is enough with
+`GODOTAI_MAX_CONCURRENT_RUNS=1`, 512 MB is not. Details, limits and the Railway/Oracle steps: `deploy/paas/README.md`,
+`docs/FREE_TIER.md`.
 
 ## Android export
 

@@ -15,7 +15,7 @@
 version = "4.7.2"
 release = "stable"            # stable | rc1 | beta2 | dev3 ... (must match the godot-builds tag suffix)
 flavor = "standard"           # standard (GDScript) | mono (.NET) — this AI targets GDScript, keep "standard"
-platform = "linux.x86_64"     # editor binary used inside the Linux/container environment
+platform = "linux.x86_64"     # editor binary used inside the Linux/container environment; linux.arm64 on ARM hosts (env: GODOTAI_ENGINE_PLATFORM)
 download_base = "https://github.com/godotengine/godot-builds/releases/download"
 
 [android]
@@ -52,6 +52,16 @@ verify_frames = 120           # frames the game is run headless during verificat
 require_plan_approval = true  # human gate between PLAN and ACT (CLI --yes skips it)
 strict_tools = false          # send strict:true on tool schemas; off by default
 
+# --- No GPU and no money? A *hosted* Qwen endpoint with a free allowance (godotai/presets.py, docs/FREE_TIER.md):
+#   GODOTAI_PRESET=openrouter_free      OPENROUTER_API_KEY=…   (qwen/qwen3.8-27b:free — 20 req/min, 50 req/day without credits)
+#   GODOTAI_PRESET=groq                 GROQ_API_KEY=…         (qwen/qwen3.8-27b, Preview — limits shown in *your* console)
+#   GODOTAI_PRESET=alibaba_model_studio DASHSCOPE_API_KEY=… GODOTAI_BASE_URL=https://<WorkspaceId>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+#   GODOTAI_PRESET=workers_ai           CF_ACCOUNT_ID=… CF_WORKERS_AI_TOKEN=…   (10,000 Neurons/day; sets route = workers_ai)
+# preset = ""                 # same ids here (env wins over the preset, the preset wins over this file). A preset sets provider,
+#                             # route, model, base_url and the [model] identity to *managed* hosting of open weights — the server
+#                             # is the provider's, your prompts are processed there. Keys only ever come from the environment.
+#                             # Facts (quotas, prices) were read 2026-09-26 and change: `python3 -m godotai presets` prints them.
+
 # --- Optional vendor reference model (NOT the product). To measure your model against Claude Fable 5.1 on the same eval
 # tasks, run with these overrides and compare with `python3 -m godotai eval compare`:
 #   GODOTAI_PROVIDER=anthropic GODOTAI_MODEL=claude-fable-5-1 GODOTAI_MODEL_KIND=vendor_api GODOTAI_SERVING=vendor \
@@ -86,5 +96,5 @@ base_model = "Qwen/Qwen2.5-Coder-7B-Instruct"   # Apache-2.0 per its model card 
 base_license = "Apache-2.0"                     # (env: GODOTAI_BASE_LICENSE)
 adapter = ""                                    # e.g. "godotai-lora" once training/train_qlora.py has produced one (env: GODOTAI_ADAPTER)
 owner = "you"
-serving = "self_hosted"                         # self_hosted | managed (e.g. Workers AI / OpenRouter) | vendor (env: GODOTAI_SERVING)
+serving = "self_hosted"                         # self_hosted | managed (a preset / Workers AI / OpenRouter run the server) | vendor (env: GODOTAI_SERVING)
 reference_model = "claude-fable-5-1"            # default counterpart for `eval compare` (env: GODOTAI_REFERENCE_MODEL)

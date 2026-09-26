@@ -46,9 +46,31 @@ class ModelTurn:
         return bool(self.tool_calls)
 
 
+RETRY_AFTER_MAX = 120.0     # seconds: the longest a provider's Retry-After is honoured (free tiers ask for a minute or two)
+
+
+def retry_after_seconds(headers: Any) -> float | None:
+    """Parse a ``Retry-After`` header (delta-seconds form; HTTP-date is ignored) → seconds, or None."""
+    try:
+        raw = headers.get("Retry-After") if headers is not None else None
+    except AttributeError:
+        return None
+    if not raw:
+        return None
+    try:
+        value = float(str(raw).strip())
+    except ValueError:
+        return None
+    return max(0.0, value) if value == value else None      # NaN guard
+
+
 def http_json_transport(url: str, headers: dict[str, str], body: dict[str, Any],
                         retries: int = 5, timeout: int = 600) -> dict[str, Any]:
-    """POST JSON with exponential backoff on 408/409/429/5xx."""
+    """POST JSON with exponential backoff on 408/409/429/5xx.
+
+    Free-allowance endpoints answer ``429`` with a ``Retry-After``; when present (and ≤ RETRY_AFTER_MAX) it replaces
+    the computed delay, so the agent waits exactly as long as the provider asks instead of hammering the quota.
+    """
     data = json.dumps(body).encode()
     delay = 2.0
     last: Exception | None = None
@@ -62,7 +84,8 @@ def http_json_transport(url: str, headers: dict[str, str], body: dict[str, Any],
             detail = exc.read().decode(errors="replace")[:2000]
             if exc.code in (408, 409, 429, 500, 502, 503, 504, 529) and attempt < retries - 1:
                 last = ProviderError(f"HTTP {exc.code}: {detail}")
-                time.sleep(delay)
+                asked = retry_after_seconds(getattr(exc, "headers", None))
+                time.sleep(min(asked, RETRY_AFTER_MAX) if asked is not None else delay)
                 delay = min(delay * 2, 60)
                 continue
             raise ProviderError(f"HTTP {exc.code}: {detail}") from None

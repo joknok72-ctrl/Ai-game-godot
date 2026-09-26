@@ -2,8 +2,12 @@
 security properties the README promises, and must never carry a credential or an account-specific identifier."""
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 
 from _helpers import REPO
 
@@ -127,6 +131,121 @@ class EnvExampleTests(unittest.TestCase):
         self.assertIn("GODOTAI_MODEL_KIND=fine_tune", ENV_EXAMPLE)
         self.assertIn("GODOTAI_ADAPTER=/adapters/godotai", ENV_EXAMPLE)
         self.assertIn("http://ollama:11434/v1", ENV_EXAMPLE)
+
+
+PAAS = REPO / "deploy" / "paas"
+PAAS_DOCKERFILE = (PAAS / "Dockerfile").read_text(encoding="utf-8")
+PAAS_ENTRYPOINT = (PAAS / "entrypoint.sh").read_text(encoding="utf-8")
+PAAS_README = (PAAS / "README.md").read_text(encoding="utf-8")
+
+
+class PaasImageTests(unittest.TestCase):
+    """deploy/paas/ — the app-only image for 1 GB hosts: no model, no Android toolchain, no credential, auth mandatory."""
+
+    def test_copied_paths_exist_and_the_image_is_app_only(self):
+        for m in re.finditer(r"^COPY\s+(.+?)\s+\S+$", PAAS_DOCKERFILE, re.M):
+            for src in m.group(1).split():
+                self.assertTrue((REPO / src).exists(), f"Dockerfile COPY {src} does not exist in the repo")
+        self.assertNotIn("Godot_v", PAAS_DOCKERFILE, "engine assets come from godot.toml via the installer")
+        self.assertIn("install-godot --system --editor-only", PAAS_DOCKERFILE, "editor only: no 1.4 GB export templates")
+        self.assertNotIn("setup-android", PAAS_DOCKERFILE, "APK export belongs to GitHub Actions, not the 1 GB host")
+        self.assertNotIn("openjdk", PAAS_DOCKERFILE)
+        self.assertNotIn("vllm", PAAS_DOCKERFILE.lower())
+        self.assertNotIn("ollama", PAAS_DOCKERFILE.lower())
+        self.assertIn("GODOTAI_CONFIG=/opt/godotai/godot.toml", PAAS_DOCKERFILE)
+        self.assertIn("linux.arm64", PAAS_DOCKERFILE, "Oracle Ampere A1 is the free ARM host")
+        self.assertIn("TARGETARCH", PAAS_DOCKERFILE)
+
+    def test_quota_defaults_and_health_probe(self):
+        self.assertIn("GODOTAI_MAX_CONCURRENT_RUNS=1", PAAS_DOCKERFILE, "one verification ≈ 640 MB: never two on a 1 GB host")
+        self.assertIn("GODOTAI_MAX_RUNS_PER_DAY=40", PAAS_DOCKERFILE)
+        self.assertIn("HEALTHCHECK", PAAS_DOCKERFILE)
+        self.assertIn("/healthz", PAAS_DOCKERFILE)
+        self.assertNotIn("/api/status", PAAS_DOCKERFILE, "/api/status needs the token; the probe must not carry it")
+        self.assertIn('ENTRYPOINT ["godotai-entrypoint"]', PAAS_DOCKERFILE)
+
+    def test_no_credential_or_account_identifier_in_paas_files(self):
+        for path in sorted(PAAS.iterdir()):
+            text = path.read_text(encoding="utf-8")
+            self.assertEqual(secrets.find_in_text(text), [], f"{path.name}: token-shaped string")
+            self.assertEqual(set(HEX32.findall(text)) - SYNTHETIC_IDS, set(), f"{path.name}: looks like a real account id")
+        self.assertEqual(secrets.scan_tree(PAAS), [])
+        docker_code = "\n".join(l for l in PAAS_DOCKERFILE.splitlines() if not l.lstrip().startswith("#"))
+        entry_code = "\n".join(l for l in PAAS_ENTRYPOINT.splitlines() if not l.lstrip().startswith("#"))
+        for name in ("OPENROUTER_API_KEY", "GROQ_API_KEY", "DASHSCOPE_API_KEY", "CF_WORKERS_AI_TOKEN", "CLOUDFLARE_API_TOKEN",
+                     "GODOTAI_CHAT_TOKEN", "CF_ACCOUNT_ID"):
+            self.assertNotRegex(docker_code, rf"{name}\s*=", f"{name} must never be baked into the image")
+            self.assertNotRegex(entry_code, rf"(?m)^\s*(export\s+)?{name}=", f"{name} must never be assigned in the entrypoint")
+        self.assertNotIn("GODOTAI_CHAT_TOKEN=<", PAAS_DOCKERFILE, "even the example passes the token through with -e NAME, not on the command line")
+
+    def test_readme_is_honest_about_deployment_state_and_the_1gb_verdict(self):
+        self.assertIn("لم يُنشر أي شيء", PAAS_README)
+        self.assertIn("Nothing has been deployed by this repository", PAAS_README)
+        self.assertIn("RAILWAY_DOCKERFILE_PATH=deploy/paas/Dockerfile", PAAS_README)
+        self.assertIn("app only", PAAS_README)
+        self.assertIn("cannot host any Qwen inference model", PAAS_README)
+        self.assertIn("512 MB", PAAS_README)
+        self.assertIn("2 OCPUs and 12 GB", PAAS_README, "Oracle Always Free figures as read on 2026-09-26")
+        self.assertIn("openssl rand -hex 32", PAAS_README)
+        self.assertNotIn("forever free", PAAS_README.lower())
+        self.assertNotIn("outperform", PAAS_README.lower())
+        for name in ("GODOTAI_CHAT_TOKEN", "GODOTAI_PRESET", "GODOTAI_MAX_RUNS_PER_DAY", "PORT", "RAILWAY_PUBLIC_DOMAIN",
+                     "RENDER_EXTERNAL_HOSTNAME"):
+            self.assertIn(name, PAAS_README)
+            self.assertIn(name, (REPO / "godotai" / "__main__.py").read_text(encoding="utf-8") + PAAS_ENTRYPOINT,
+                          f"{name} is documented but nothing reads it")
+
+    # -- the entrypoint really runs (sh + a stub python3), so the refusals are behaviour, not prose -------------
+    def _run_entrypoint(self, env: dict[str, str], *args: str) -> tuple[int, str, str]:
+        with tempfile.TemporaryDirectory() as d:
+            stub = Path(d) / "python3"
+            stub.write_text("#!/bin/sh\nprintf 'ARGV:%s\\n' \"$@\"\nprintf 'PLATFORM:%s\\n' \"${GODOTAI_ENGINE_PLATFORM:-unset}\"\n",
+                            encoding="utf-8")
+            stub.chmod(0o755)
+            full_env = {"PATH": f"{d}:{os.environ.get('PATH', '/usr/bin:/bin')}", **env}
+            proc = subprocess.run(["sh", str(PAAS / "entrypoint.sh"), *args], env=full_env, capture_output=True, text=True,
+                                  timeout=30)
+        return proc.returncode, proc.stdout, proc.stderr
+
+    def test_entrypoint_refuses_a_public_server_without_authentication(self):
+        rc, out, err = self._run_entrypoint({"GODOTAI_PRESET": "openrouter_free", "OPENROUTER_API_KEY": "fake"}, "chat")
+        self.assertEqual(rc, 64)
+        self.assertIn("refusing to start a public chat server without authentication", err)
+        self.assertIn("GODOTAI_CHAT_TOKEN", err)
+        self.assertIn("GODOTAI_ACCESS_AUD", err)
+        self.assertNotIn("ARGV:", out, "python must never have been launched")
+
+    def test_entrypoint_refuses_without_a_model_endpoint(self):
+        rc, out, err = self._run_entrypoint({"GODOTAI_CHAT_TOKEN": "t"}, "chat")
+        self.assertEqual(rc, 64)
+        self.assertIn("no model endpoint", err)
+        self.assertIn("GODOTAI_PRESET", err)
+        self.assertNotIn("ARGV:", out)
+
+    def test_entrypoint_launches_the_public_chat_server_with_the_quota_env_intact(self):
+        env = {"GODOTAI_CHAT_TOKEN": "t", "GODOTAI_PRESET": "groq", "GROQ_API_KEY": "fake", "GODOTAI_GAMES_DIR": "/games"}
+        rc, out, err = self._run_entrypoint(env, "chat", "--verbose")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([l for l in out.splitlines() if l.startswith("ARGV:")],
+                         ["ARGV:-m", "ARGV:godotai", "ARGV:chat", "ARGV:--host", "ARGV:0.0.0.0", "ARGV:--games-dir", "ARGV:/games",
+                          "ARGV:--verbose"])
+        self.assertNotIn("--token", out, "the token travels in the environment, never on the command line")
+        self.assertNotIn("--port", out, "the port comes from PORT/GODOTAI_PORT inside the chat command")
+        # no first argument at all == chat; Cloudflare Access instead of a token is accepted as authentication
+        rc, out, _ = self._run_entrypoint({"GODOTAI_ACCESS_AUD": "aud", "GODOTAI_BASE_URL": "http://model.internal:8000/v1"})
+        self.assertEqual(rc, 0)
+        self.assertIn("ARGV:chat", out)
+        # any other sub-command passes straight through (doctor, presets …) with no auth requirement
+        rc, out, _ = self._run_entrypoint({}, "presets", "--json")
+        self.assertEqual(rc, 0)
+        self.assertEqual([l for l in out.splitlines() if l.startswith("ARGV:")], ["ARGV:-m", "ARGV:godotai", "ARGV:presets", "ARGV:--json"])
+
+    def test_entrypoint_platform_handling_matches_the_installed_asset(self):
+        self.assertIn('uname -m', PAAS_ENTRYPOINT)
+        self.assertIn("aarch64", PAAS_ENTRYPOINT)
+        self.assertIn("GODOTAI_ENGINE_PLATFORM=linux.arm64", PAAS_ENTRYPOINT)
+        _rc, out, _ = self._run_entrypoint({"GODOTAI_ENGINE_PLATFORM": "linux.x86_64"}, "doctor")
+        self.assertIn("PLATFORM:linux.x86_64", out, "an explicit platform is never overridden")
 
 
 class GitignoreAndDocsTests(unittest.TestCase):

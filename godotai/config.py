@@ -25,6 +25,11 @@ class ConfigError(RuntimeError):
     """Raised when godot.toml is missing or malformed."""
 
 
+# Editor asset names published by godot-builds for Linux (all four are in engine/checksums/<tag>/SHA512-SUMS.txt).
+# arm64 matters for the free ARM hosts (e.g. Oracle Ampere A1) — see docs/FREE_TIER.md; env: GODOTAI_ENGINE_PLATFORM.
+LINUX_PLATFORMS = ("linux.x86_64", "linux.arm64", "linux.x86_32", "linux.arm32")
+
+
 @dataclass(frozen=True)
 class EngineConfig:
     version: str = "4.7.2"
@@ -40,6 +45,9 @@ class EngineConfig:
             raise ConfigError(f"engine.release must look like 'stable' or 'rc1', got {self.release!r}")
         if self.flavor not in ("standard", "mono"):
             raise ConfigError("engine.flavor must be 'standard' or 'mono'")
+        if self.platform not in LINUX_PLATFORMS:
+            raise ConfigError(f"engine.platform must be one of {'|'.join(LINUX_PLATFORMS)} (headless Linux hosts only), "
+                              f"got {self.platform!r}")
 
     # -- naming helpers (match the official godot-builds asset names) -------
     @property
@@ -148,10 +156,21 @@ class AgentConfig:
     task_budget_tokens: int | None = None  # beta: advisory whole-task budget (output_config.task_budget)
     prefix_binding_drop: bool = False    # beta: drop (and report) thinking blocks whose prefix changed — debugging aid
     route: str = "direct"                # direct | cf_gateway (Cloudflare AI Gateway) | workers_ai (Cloudflare Workers AI)
+    preset: str = ""                     # hosted free-allowance endpoint (godotai/presets.py); "" = none (GODOTAI_PRESET)
 
     def __post_init__(self) -> None:
         if self.provider not in ("anthropic", "openai_compat"):
             raise ConfigError("agent.provider must be 'anthropic' or 'openai_compat'")
+        if self.preset:
+            from . import presets
+            try:
+                p = presets.get(self.preset)
+            except presets.PresetError as exc:
+                raise ConfigError(f"agent.preset: {exc}") from None
+            if self.provider != "openai_compat":
+                raise ConfigError(f"agent.preset = {self.preset!r} is an OpenAI-compatible endpoint; provider must be openai_compat")
+            if self.route != p.route:
+                raise ConfigError(f"agent.preset = {self.preset!r} uses route {p.route!r}, not {self.route!r}")
         if self.effort not in EFFORT_LEVELS:
             raise ConfigError("agent.effort must be one of low|medium|high|xhigh|max")
         if self.act_effort is not None and self.act_effort not in EFFORT_LEVELS:
@@ -181,6 +200,9 @@ class AgentConfig:
             return self.base_url
         if self.provider != "openai_compat" or self.route != "direct":
             return None
+        if self.preset:                                   # a hosted preset: its documented endpoint, never the private default
+            from . import presets
+            return presets.get(self.preset).base_url
         env_url = os.environ.get("OPENAI_BASE_URL", "").strip()
         if env_url:
             return env_url
@@ -188,9 +210,11 @@ class AgentConfig:
 
     @property
     def private_endpoint(self) -> bool:
-        """True when the model is reached at a self-hosted / private URL (not a vendor API, not Cloudflare-managed)."""
+        """True when the model is reached at a self-hosted / private URL (not a vendor API, not a hosted preset, not
+        Cloudflare-managed)."""
         url = self.endpoint
-        return bool(url) and self.route == "direct" and self.provider == "openai_compat" and "api.openai.com" not in url
+        return (bool(url) and self.route == "direct" and self.provider == "openai_compat" and not self.preset
+                and "api.openai.com" not in url)
 
 
 @dataclass(frozen=True)
@@ -204,7 +228,8 @@ class Config:
     def __post_init__(self) -> None:
         # The one lie this project must never tell: a vendor model presented as "your" model (or the reverse).
         try:
-            check_consistency(self.model, self.agent.provider, self.agent.model, self.agent.endpoint, self.agent.route)
+            check_consistency(self.model, self.agent.provider, self.agent.model, self.agent.endpoint, self.agent.route,
+                              self.agent.preset)
         except ModelIdentityError as exc:
             raise ConfigError(str(exc)) from exc
 
@@ -243,8 +268,10 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         "GODOTAI_ACT_EFFORT": (agent, "act_effort"),
         "GODOTAI_BASE_URL": (agent, "base_url"),
         "GODOTAI_ROUTE": (agent, "route"),
+        "GODOTAI_PRESET": (agent, "preset"),
         "GODOTAI_ENGINE_VERSION": (engine, "version"),
         "GODOTAI_ENGINE_RELEASE": (engine, "release"),
+        "GODOTAI_ENGINE_PLATFORM": (engine, "platform"),     # linux.arm64 on ARM hosts (deploy/paas/Dockerfile)
         # identity of the weights behind [agent] (see godotai/model_identity.py)
         "GODOTAI_MODEL_NAME": (model, "name"),
         "GODOTAI_MODEL_KIND": (model, "kind"),
@@ -290,6 +317,13 @@ def load_config(path: Path | None = None) -> Config:
         except tomllib.TOMLDecodeError as exc:  # pragma: no cover - defensive
             raise ConfigError(f"{cfg_path}: {exc}") from exc
     data = _apply_env_overrides(data)
+    preset_id = str(data.get("agent", {}).get("preset") or "").strip()
+    if preset_id:                                          # hosted free-allowance endpoint: defaults for [agent] + [model]
+        from . import presets
+        try:
+            data = presets.apply_preset(data, preset_id)
+        except presets.PresetError as exc:
+            raise ConfigError(f"{cfg_path}: {exc}") from None
 
     engine_d = dict(data.get("engine", {}))
     android_d = dict(data.get("android", {}))
