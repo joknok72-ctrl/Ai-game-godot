@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>godotai — اكتب فكرة لعبتك</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true">▶</span>
+    <div>
+      <h1>godotai <small>Godot <span id="engine-tag">4.7.2-stable</span></small></h1>
+      <p class="tagline">هنا المكان اللي تكلّم فيه الذكاء الاصطناعي: اكتب فكرة اللعبة، يخطّط، توافق، يبني ويتحقق بالمحرك الحقيقي.</p>
+    </div>
+  </div>
+  <div class="chips" id="chips" aria-live="polite"></div>
+</header>
+
+<section id="setup" class="setup hidden" aria-live="polite"></section>
+
+<main class="layout">
+  <aside class="side">
+    <h2>مشاريعك <span class="dim" id="games-dir" title="مجلد الألعاب"></span></h2>
+    <ul id="projects" class="projects"></ul>
+    <form id="new-project" class="new-project" autocomplete="off">
+      <input id="new-name" type="text" maxlength="60" placeholder="اسم مشروع جديد (مثال: flappy)" aria-label="اسم مشروع جديد">
+      <button type="submit" class="btn primary">مشروع جديد</button>
+    </form>
+    <p class="hint">كل مشروع = مجلد لعبة Godot مستقل داخل مجلد الألعاب. الرسائل التالية في نفس المشروع تعدّل نفس اللعبة.</p>
+  </aside>
+
+  <section class="chat">
+    <div class="chat-head">
+      <div>
+        <h2 id="session-title">اختر مشروعًا أو أنشئ واحدًا</h2>
+        <div class="dim mono" id="session-path"></div>
+      </div>
+      <div class="chat-actions">
+        <button id="btn-verify" class="btn" disabled title="يشغّل محرك Godot على المشروع بدون نموذج ذكاء اصطناعي">تحقق بالمحرك</button>
+        <button id="btn-files" class="btn" disabled>ملفات اللعبة</button>
+        <button id="btn-cancel" class="btn danger" disabled>إيقاف</button>
+      </div>
+    </div>
+
+    <div id="timeline" class="timeline" aria-live="polite">
+      <div class="empty" id="empty-hint">
+        <h3>كيف أبدأ؟</h3>
+        <ol>
+          <li>أنشئ مشروعًا من القائمة الجانبية (أو اختر مشروعًا موجودًا).</li>
+          <li>اكتب فكرة اللعبة في الصندوق بالأسفل. مثال: <em>«اعمل لعبة Flappy Bird للموبايل بالتحكم باللمس، بدون صور خارجية، وصدّر APK»</em>.</li>
+          <li>الذكاء الاصطناعي يقرأ المشروع ويعرض <strong>خطة</strong>. وافق عليها أو اطلب تعديلًا.</li>
+          <li>بعد الموافقة يبني الملفات ويشغّل محرك Godot 4.7.2 للتحقق، ولا يقول «تم» إلا بعد أن يقول المحرك PASS.</li>
+        </ol>
+      </div>
+    </div>
+
+    <form id="composer" class="composer">
+      <textarea id="message" rows="3" maxlength="20000" placeholder="اكتب هنا فكرة اللعبة أو التعديل المطلوب… (عربي أو إنجليزي)" aria-label="رسالتك" disabled></textarea>
+      <div class="composer-row">
+        <label class="check"><input type="checkbox" id="auto-approve"> وافق على الخطة تلقائيًا</label>
+        <label class="check"><input type="checkbox" id="plan-only"> خطة فقط (بدون تنفيذ)</label>
+        <span class="grow"></span>
+        <span id="run-state" class="state"></span>
+        <button type="submit" id="btn-send" class="btn primary big" disabled>ابعت للذكاء الاصطناعي</button>
+      </div>
+    </form>
+  </section>
+</main>
+
+<dialog id="viewer">
+  <div class="viewer-head">
+    <strong id="viewer-title" class="mono"></strong>
+    <button id="viewer-close" class="btn" type="button">إغلاق</button>
+  </div>
+  <pre id="viewer-body" class="viewer-body" dir="ltr"></pre>
+</dialog>
+
+<footer class="foot">
+  <span>godotai <span id="version"></span> · الخادم يعمل على جهازك فقط (لا يوجد موقع عام). أوقفه بـ Ctrl+C في الطرفية.</span>
+</footer>
+<script src="/static/app.js"></script>
+</body>
+</html>

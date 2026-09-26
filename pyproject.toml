@@ -19,7 +19,7 @@ lint = ["gdtoolkit==4.*"]   # gdlint / gdformat — advisory step of the verific
 godotai = "godotai.__main__:main"
 
 [tool.setuptools]
-packages = ["godotai", "godotai.providers", "godotai.tools"]
+packages = ["godotai", "godotai.providers", "godotai.tools", "godotai.chat"]
 
 [tool.setuptools.package-data]
-godotai = ["prompts/*.md"]
+godotai = ["prompts/*.md", "chat/static/*"]

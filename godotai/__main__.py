@@ -8,6 +8,7 @@
   python3 -m godotai export --project ./my-game --out build/game.apk [--release]
   python3 -m godotai plan "make a 2D endless runner" --workspace ./my-game
   python3 -m godotai run  "make a 2D endless runner" --workspace ./my-game [--yes]
+  python3 -m godotai chat [--port 8765] [--games-dir ./games]   # browser chat UI → http://127.0.0.1:8765
   python3 -m godotai apiref build [--docs-dir godot/doc/classes] [--force]   # ClassDB index from the pinned binary
   python3 -m godotai apiref lookup CharacterBody2D move_and_slide             # exact signature
   python3 -m godotai apiref search "change scene"                              # name search
@@ -253,6 +254,55 @@ def cmd_run(args: argparse.Namespace, plan_only: bool = False) -> int:
     return 0 if summary.status == "success" else 1
 
 
+def cmd_chat(args: argparse.Namespace) -> int:
+    """Browser chat UI on top of the same agent as `run` (see godotai/chat/)."""
+    from .chat import ChatServer, ChatServerError, environment_status
+    cfg = _cfg(args)
+    token = args.token or os.environ.get("GODOTAI_CHAT_TOKEN") or None
+    try:
+        server = ChatServer(cfg, Path(args.games_dir), host=args.host, port=args.port, token=token,
+                            auto_approve_default=args.yes or not cfg.agent.require_plan_approval,
+                            include_github=not args.no_github, quiet=not args.verbose)
+    except ChatServerError as exc:
+        sys.exit(str(exc))
+    except OSError as exc:
+        sys.exit(f"cannot listen on {args.host}:{args.port}: {exc} (try --port <other>)")
+    st = environment_status(cfg)
+    url = server.url
+    print(f"godotai chat {__version__} — Godot {cfg.engine.tag} — {cfg.agent.provider}/{cfg.agent.model} effort={cfg.agent.effort}")
+    print(f"games directory: {server.manager.games_dir}")
+    print(f"\n  افتح هذا العنوان في المتصفح:   {url}")
+    print(f"  Open this URL in your browser: {url}")
+    if token:
+        print("  (token mode: open the URL as …/#token=<your token>, or paste the token when the page asks)")
+    print()
+    print(f"{'✅' if st['engine']['ok'] else '❌'} Godot {cfg.engine.tag}: "
+          + (f"{st['engine']['version']} at {st['engine']['binary']}" if st['engine']['ok'] else
+             f"{st['engine']['error']} → python3 -m godotai install-godot"))
+    print(f"{'✅' if st['model']['ready'] else '❌'} model key ({st['model']['key_env']}): "
+          + ("set" if st['model']['ready'] else "not set — the page explains what to export before sending a message"))
+    if not is_loopback_host(args.host):
+        print(f"⚠ listening on {args.host} — token required on every API request (kept out of logs)")
+    print("Ctrl+C to stop.")
+    if args.open:
+        import webbrowser
+        webbrowser.open(url)
+    if args.check:
+        server.shutdown()
+        return 0
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopping…")
+        server.shutdown()
+    return 0
+
+
+def is_loopback_host(host: str) -> bool:
+    from .chat import is_loopback
+    return is_loopback(host)
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="godotai", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", help="path to godot.toml (default: search upward / repo file)")
@@ -301,6 +351,18 @@ def main(argv: list[str] | None = None) -> int:
         s.add_argument("--yes", action="store_true", help="auto-approve the plan")
         s.add_argument("--no-github", action="store_true", help="do not expose GitHub tools")
         s.set_defaults(fn=lambda a, po=plan_only: cmd_run(a, plan_only=po))
+
+    s = sub.add_parser("chat", help="browser chat UI: talk to the AI, approve plans, watch the engine verify")
+    s.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1; anything else needs --token)")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--games-dir", default="./games", help="each project is a sub-folder here (default ./games)")
+    s.add_argument("--token", help="access token for every API request (env GODOTAI_CHAT_TOKEN); required off-loopback")
+    s.add_argument("--yes", action="store_true", help="tick 'auto-approve the plan' by default in the page")
+    s.add_argument("--no-github", action="store_true", help="do not expose GitHub tools to the model")
+    s.add_argument("--open", action="store_true", help="open the page in the default browser")
+    s.add_argument("--verbose", action="store_true", help="log every HTTP request")
+    s.add_argument("--check", action="store_true", help="start, print the URL + readiness, stop (CI smoke test)")
+    s.set_defaults(fn=cmd_chat)
 
     s = sub.add_parser("apiref", help="engine-generated API index: build / lookup / search / lint")
     asub = s.add_subparsers(dest="action", required=True)

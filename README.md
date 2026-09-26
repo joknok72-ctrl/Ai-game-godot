@@ -7,6 +7,51 @@
 
 ---
 
+## فين المكان اللي أكلّم فيه الذكاء الاصطناعي وأقوله يعمل لعبة؟
+
+**الجواب المباشر:** لا يوجد موقع عام على الإنترنت لهذا المشروع (ولم نرفع شيئًا على أي خادم). المكان الذي تكلّمه فيه هو
+**صفحة محادثة تعمل على جهازك أنت**، تشغّلها بأمر واحد ثم تفتحها في المتصفح:
+
+```bash
+python3 -m godotai chat
+#   افتح هذا العنوان في المتصفح:   http://127.0.0.1:8765/
+```
+
+في الصفحة: تنشئ «مشروعًا» (= مجلد لعبة)، تكتب فكرة اللعبة بالعربي أو الإنجليزي وتضغط **«ابعت للذكاء الاصطناعي»**،
+يظهر لك **خطة**، توافق عليها (أو تكتب ما تريد تغييره)، ثم يبني الملفات ويشغّل محرك Godot 4.7.2 للتحقق، وترى كل خطوة
+وتقرير المحرك مباشرة في المحادثة. الرسالة التالية في نفس المشروع تعدّل نفس اللعبة («أضف زر إيقاف»، «صدّر APK»…).
+
+**خطوات التشغيل من الصفر (مرة واحدة على جهاز Linux أو WSL):**
+
+```bash
+git clone https://github.com/joknok72-ctrl/Ai-game-godot.git && cd Ai-game-godot
+
+# 1) محرك Godot 4.7.2 (تنزيل رسمي مُتحقَّق منه بـ SHA-512، ~1.4 GB) — بدونه لا يستطيع التحقق من أي لعبة
+python3 -m godotai install-godot
+export PATH="$HOME/.local/bin:$PATH"
+
+# 2) مفتاح النموذج — هذا هو "الذكاء" الذي يفكّر؛ المشروع لا يشمل مفتاحًا ولا حسابًا، وأنت تدفع لمزوّد النموذج مباشرة
+export ANTHROPIC_API_KEY=<مفتاحك من console.anthropic.com>      # الافتراضي: claude-fable-5-1 بجهد max
+
+# 3) شغّل صفحة المحادثة وافتح العنوان الذي يطبعه
+python3 -m godotai chat
+```
+
+- **بديل بدون Claude:** أي خادم متوافق مع OpenAI (Ollama / vLLM / llama.cpp / OpenRouter):
+  `export GODOTAI_PROVIDER=openai_compat GODOTAI_MODEL=<اسم الموديل> OPENAI_BASE_URL=http://localhost:11434/v1`
+  ثم `python3 -m godotai chat`. (خادم محلي لا يحتاج مفتاحًا؛ الخدمات المدفوعة تحتاج `OPENAI_API_KEY`.)
+- **بدون متصفح (سطر أوامر):** `python3 -m godotai run "اعمل لعبة Flappy Bird للموبايل" --workspace ./flappy`
+  — نفس الوكيل تمامًا، والموافقة على الخطة تكون سؤالًا في الطرفية.
+- **لو ناقص شيء:** الصفحة نفسها تكتب لك بالعربي ما الناقص بالضبط (المفتاح؟ المحرك؟) والأمر الذي تنفّذه، و
+  `python3 -m godotai doctor` يعرض نفس الفحص في الطرفية.
+- **ليه مفيش موقع؟** لأن الموقع يحتاج خادمًا يعمل 24 ساعة ومفتاح API يُدفع ثمنه؛ إن أردت واحدًا لاحقًا فصورة Docker في
+  `docker/Dockerfile` جاهزة (`godotai chat --host 0.0.0.0` مع رمز دخول `--token`)، ولكن لم يُنشر أي شيء من هذا المشروع.
+
+> أين تظهر اللعبة؟ في `./games/<اسم-المشروع>/` بجانب المستودع (يمكن تغييره بـ `--games-dir`). افتحه بمحرر Godot 4.7.2
+> العادي إن أردت، أو اطلب من الذكاء الاصطناعي تصدير APK.
+
+---
+
 ## بالعربي — ما هذا المشروع؟
 
 هذا وكيل ذكاء اصطناعي (agent) مجاله **واحد فقط**: صناعة ألعاب على محرك **Godot Engine 4.7.2-stable** بلغة GDScript.
@@ -44,6 +89,7 @@
 | `godot.toml` | **Single source of truth**: engine pin (4.7.2-stable), Android SDK requirements, model/effort settings |
 | `godotai/` | The agent (stdlib-only Python 3.11+, zero dependencies): CLI, agent loop, planner, tools, providers, verification, installer |
 | `godotai/prompts/` | System prompt (strict scope + engineering standards) and planning-phase prompt |
+| `godotai/chat/` | **The place to talk to the AI**: `python3 -m godotai chat` → local browser page (Arabic-first) + JSON/SSE API over the *same* agent, plan gate and engine verification as `run` |
 | `godotai/apiref.py` + `tools/apiref_tools.py` | **ClassDB index generated from the pinned binary** (`--doctool`): `api_lookup`, `api_search`, `api_lint`; advisory lint in every verification |
 | `godotai/evals.py` + `evals/tasks/` | Engine-verified task bank (6 tasks incl. a Godot-3 migration trap and an out-of-scope refusal); scored by the engine + structural checks, never by a model |
 | `godotai/dataset.py` + `training/` | Verified run logs → redacted SFT JSONL → optional QLoRA fine-tune of an open-weight model (Kaggle T4×2 script kernel included) |
@@ -83,7 +129,8 @@ python3 -m godotai apiref lint --project ./tapdodge   # Godot-3 idioms / unknown
 
 # 5. Let the AI build a game (plan → your approval → act → verify)
 export ANTHROPIC_API_KEY=...                # or set GODOTAI_PROVIDER=openai_compat + OPENAI_BASE_URL for local models
-python3 -m godotai plan "لعبة 2D endless runner للموبايل بالتحكم باللمس" --workspace ./runner   # plan only
+python3 -m godotai chat                     # ← browser chat at http://127.0.0.1:8765 — the user-facing way to ask for a game
+python3 -m godotai plan "لعبة 2D endless runner للموبايل بالتحكم باللمس" --workspace ./runner   # plan only (CLI)
 python3 -m godotai run  "make a 2D endless runner for Android with touch controls" --workspace ./runner
 
 # 6. Measure, collect, (optionally) train the specialised model — see training/README.md
@@ -102,6 +149,27 @@ docker run --rm -it -e ANTHROPIC_API_KEY -e GITHUB_TOKEN -v "$PWD/games:/games" 
 
 The image contains everything the official 4.7 Android export documentation requires (OpenJDK 17, Build-Tools 35.0.1,
 Platform 35, CMake 3.10.2.4988404, NDK r28b) plus the pinned engine, all installed from `godot.toml`.
+
+Chat UI from the container (the server must bind `0.0.0.0` inside Docker, which godotai only permits with a token):
+
+```bash
+docker run --rm -it -e ANTHROPIC_API_KEY -e GODOTAI_CHAT_TOKEN=<choose-a-secret> \
+       -p 127.0.0.1:8765:8765 -v "$PWD/games:/games" godotai chat --host 0.0.0.0 --games-dir /games
+# then open http://127.0.0.1:8765/#token=<choose-a-secret>
+```
+
+## Talking to the AI (chat UI)
+
+`python3 -m godotai chat` starts a stdlib-only HTTP server on `127.0.0.1:8765` serving a browser page and a small
+JSON + Server-Sent-Events API (`docs/USAGE.md` lists the routes). It is **not a demo**: every message becomes a real
+`Agent.run()` in `./games/<project>/` with the same tool registry, policy layer and engine verification as the CLI.
+The plan gate is the same too — the plan appears as a card with *approve* / *revise with feedback* buttons, and nothing is
+written until you approve (or tick *auto-approve*). Tool calls, `godot_verify` reports and the final summary stream in
+live; the conversation is persisted in `<project>/.godotai/chat.jsonl` and the full transcript in `.godotai/runs/`.
+
+Safety defaults: loopback only (any other `--host` requires `--token`/`GODOTAI_CHAT_TOKEN`), `Host`/`Origin` checks,
+strict CSP with no inline script, file viewer restricted to the project directory and never to secret files, and the
+status endpoint reports only whether a key is *set* — never its value.
 
 ## GitHub integration
 
@@ -139,12 +207,21 @@ Verified on 2026-09-26 in a Linux sandbox with the official `Godot_v4.7.2-stable
   runner installed the pinned editor, built the ClassDB index from it (same 1 076 / 10 731 / 6 999 / 503 / 6 012
   counts), verified the template, ran the 201 tests *with* the engine, and `eval score --task template-baseline`
   reported **PASS**; secret scan, training dry-run and `kaggle_push.py --check` all passed credential-free.
+- ✅ Chat UI: 27 offline tests (`tests/test_chat.py`, full suite now 228) drive the real HTTP server with a scripted
+  model through create-project → message → plan over SSE → reject-with-feedback → approve → tool events →
+  engine-verified success → persisted history → follow-up message with context, plus cancel, provider-error
+  recovery, plan-only, token/Host/Origin guards, path-traversal/secret-file refusals and server start/stop
+  lifecycle (Ctrl+C, `--check`, embedded); the page's JavaScript was exercised in a DOM (jsdom) against the live
+  server through the same flow with zero JS errors; `chat --check` binds a port and exits cleanly (CI step).
 
 Not yet verified (implemented, but no evidence of success — treat as untested):
 
 - ❌ Live model calls to `claude-fable-5-1` / OpenAI-compatible servers (request shapes — including the opt-in
   Fable 5.1 betas: per-message effort, task budgets, progress updates, turn-scoped system messages — are
-  unit-tested against the documentation only).
+  unit-tested against the documentation only). The chat UI therefore has **not** been used with a live model
+  either: no API key was available to this project, and none was ever stored in it.
+- ❌ No public website is deployed. The chat server runs on the user's machine (or in the Docker image behind a token);
+  nothing from this repository has been published to any host.
 - ❌ Cloudflare AI Gateway / Workers AI and Kaggle: URL/header/metadata construction is unit-tested; **no live
   request or kernel push was made**, and no credential from the user was used anywhere.
 - ❌ QLoRA training itself (`training/train_qlora.py` without `--dry-run`) — written against the TRL v1.14 /

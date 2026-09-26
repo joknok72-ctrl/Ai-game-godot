@@ -20,10 +20,11 @@ from .config import Config
 from .godot import Godot, GodotNotFound, GodotVersionMismatch
 from .planner import Plan
 from .providers import ModelTurn, Provider, ToolCall
-from .tools import Phase, ToolContext, ToolRegistry
+from .tools import Phase, ToolContext, ToolRegistry, ToolResult
 
 PROMPTS = Path(__file__).parent / "prompts"
 ApproveFn = Callable[[Plan], tuple[bool, str]]
+ToolHook = Callable[[ToolCall, ToolResult], None]
 
 # Verbatim from "Prompting Claude Fable 5.1" (platform.claude.com, read 2026-09-26).
 # Batching: appended after every tool-result message (documented placement), never edited later.
@@ -57,7 +58,8 @@ class Agent:
     def __init__(self, cfg: Config, workspace: Path, provider: Provider, registry: ToolRegistry,
                  approve: ApproveFn | None = None, log: Callable[[str], None] = print,
                  on_text: Callable[[str], None] | None = None, plan_only: bool = False,
-                 on_progress: Callable[[str], None] | None = None):
+                 on_progress: Callable[[str], None] | None = None,
+                 on_tool: ToolHook | None = None, should_stop: Callable[[], bool] | None = None):
         self.cfg = cfg
         self.workspace = Path(workspace).resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
@@ -67,6 +69,10 @@ class Agent:
         self.log = log
         self.on_text = on_text or (lambda t: log(t))
         self.on_progress = on_progress or (lambda t: log(f"  ◦ {t}"))
+        # structured hook per executed tool call (the chat UI shows these live); log lines stay as before
+        self.on_tool: ToolHook = on_tool or (lambda call, res: None)
+        # cooperative cancellation: checked before every model turn and right after the approval gate
+        self.should_stop: Callable[[], bool] = should_stop or (lambda: False)
         self.plan_only = plan_only
         self.ctx = ToolContext(cfg=cfg, workspace=self.workspace, log=log)
         self.system = self._render(PROMPTS / "system.md", {"GODOT_TAG": cfg.engine.tag})
@@ -149,6 +155,7 @@ class Agent:
             self.log(f"  → {call.name}({_short_args(call.args)})")
             res = self.registry.execute(call.name, call.args, self.ctx)
             results.append((call, res.content, res.is_error))
+            self.on_tool(call, res)
         nudge = BATCH_NUDGE if self.cfg.agent.batch_nudge else None
         self.messages.extend(self.provider.tool_results_message(results, nudge=nudge))
 
@@ -176,10 +183,17 @@ class Agent:
         summary.log_path = self._write_log(task, summary, time.time() - started)
         return summary
 
+    def _cancelled(self) -> RunSummary:
+        self.log("  ⏹ cancelled by the user")
+        return RunSummary("aborted", "cancelled by the user", self.ctx.plan.to_dict() if self.ctx.plan else None,
+                          self.ctx.last_verification_passed)
+
     def _loop(self) -> RunSummary:
         nudges = 0
         verify_rounds = 0
         while self.iterations < self.cfg.agent.max_iterations:
+            if self.should_stop():
+                return self._cancelled()
             turn = self._step()
             if turn.refusal:
                 return RunSummary("refused", "the model declined the request (stop_reason=refusal)")
@@ -195,6 +209,8 @@ class Agent:
                         self.ctx.phase = Phase.DONE
                         return RunSummary("success", "plan created (plan-only mode)", plan.to_dict())
                     approved, feedback = self.approve(plan)
+                    if self.should_stop():          # the reviewer walked away / pressed stop while the plan was pending
+                        return self._cancelled()
                     if approved:
                         self.ctx.plan = plan
                         self.ctx.phase = Phase.ACT
