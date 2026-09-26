@@ -11,6 +11,20 @@ def make_provider(agent_cfg: AgentConfig, **overrides) -> Provider:
     if agent_cfg.provider == "openai_compat" and agent_cfg.route == "direct":
         kw["base_url"] = agent_cfg.endpoint          # explicit URL → OPENAI_BASE_URL → vendor (key set) → private default
 
+    # hosted free-allowance preset (godotai/presets.py): the key comes from *its* env var name, never OPENAI_API_KEY's
+    # "not-needed" fallback; the completion cap is clamped to what the provider documents.
+    if agent_cfg.preset:
+        from .. import presets
+        p = presets.get(agent_cfg.preset)
+        if p.route == "direct":
+            key = p.key()
+            if not key:
+                raise ProviderError(f"preset {p.id!r} needs the API key in {p.key_env} (create one at {p.signup_url}; "
+                                    f"export it in the shell or the deployment's secret store — never in a file of this repo)")
+            kw.setdefault("api_key", key)
+        if p.max_output_tokens and kw["max_tokens"] > p.max_output_tokens:
+            kw["max_tokens"] = p.max_output_tokens
+
     # optional Cloudflare routing — URLs from env var *names*, no values in the repo
     if agent_cfg.route == "cf_gateway":
         from . import cloudflare

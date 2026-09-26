@@ -76,8 +76,11 @@
     const modelLabel = m.private ? `نموذجك «${id.name || m.model}» · ${m.ready ? "الخادم يعمل" : "الخادم غير متاح"}`
                                  : `${m.provider}/${m.model} · effort=${m.effort}`;
     const modelTitle = m.private ? (m.base_url || "") + (m.server && m.server.models && m.server.models.length ? " · يقدّم: " + m.server.models.slice(0, 5).join(", ") : "")
-                                 : (m.ready ? "مفتاح النموذج موجود" : "مفتاح النموذج مفقود");
+                                 : (m.ready ? `مفتاح النموذج (${m.key_env || ""}) موجود` : `مفتاح النموذج (${m.key_env || ""}) مفقود`);
     chips.appendChild(chip(modelLabel, m.ready ? "ok" : "bad", modelTitle));
+    // hosted free-allowance preset (godotai/presets.py): say where the server is and what the allowance really is
+    if (m.preset) chips.appendChild(chip(`🆓 ${m.preset.label_ar}`, m.ready ? "ok" : "warn",
+                                         `الخادم عند المزوّد، ليس خادمك. الحصة (قُرئت ${m.preset.verified}): ${m.preset.free_ar}\n\nالبيانات: ${m.preset.data_ar}`));
     if (m.private && m.server && m.server.model_listed === false) chips.appendChild(chip(`⚠ الاسم «${m.model}» غير موجود في الخادم`, "warn", "المتاح: " + m.server.models.join(", ") + " — اضبط GODOTAI_MODEL أو --served-model-name"));
     const hosting = st.hosting || (st.token_required ? "token" : "local");
     chips.appendChild(chip(hosting === "access" ? `🔐 موقع عام محمي بـ Cloudflare Access${st.public_hosts && st.public_hosts.length ? " · " + st.public_hosts[0] : ""}` : hosting === "token" ? "🔑 وصول برمز (token)" : "💻 محلي على جهازك فقط",

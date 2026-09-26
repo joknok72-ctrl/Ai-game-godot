@@ -101,6 +101,8 @@ class ModelIdentity:
         return self.kind in ("fine_tune", "from_scratch")
 
     def kind_label(self, lang: str = "ar") -> str:
+        if self.kind == "open_weight_deployment" and self.serving == "managed":   # not "private" when a provider runs it
+            return "نموذج مفتوح الوزن عند مزوّد استضافة" if lang == "ar" else "open-weight model hosted by a provider"
         return (_KIND_LABEL_AR if lang == "ar" else _KIND_LABEL_EN)[self.kind]
 
     def serving_label(self, lang: str = "ar") -> str:
@@ -110,11 +112,15 @@ class ModelIdentity:
     def disclosure(self, lang: str = "ar") -> str:
         base = self.base_model.strip()
         lic = self.base_license.strip() or ("unknown licence" if lang == "en" else "رخصة غير محددة")
+        managed_ar = (" الخادم ليس خادمك: طلباتك ومخرجاتها تُعالَج عند مزوّد الاستضافة وفق شروطه (انظر docs/FREE_TIER.md)."
+                      if self.serving == "managed" else "")
+        managed_en = (" The server is not yours: your prompts and outputs are processed by the hosting provider under its "
+                      "terms (see docs/FREE_TIER.md)." if self.serving == "managed" else "")
         if lang == "ar":
             if self.kind == "open_weight_deployment":
                 return (f"«{self.name}» = نموذج مفتوح الوزن {base} (رخصة {lic}) يعمل {self.serving_label('ar')} مع أدوات "
                         f"وفهرس محرك Godot 4.7.2 وتحقق بالمحرك. الأوزان ليست من تدريبك ولم تُدرَّب من الصفر؛ التخصص هنا يأتي "
-                        f"من الأدوات والبيانات، وعند تدريب محوّل خاص بك يتغيّر النوع إلى fine_tune.")
+                        f"من الأدوات والبيانات، وعند تدريب محوّل خاص بك يتغيّر النوع إلى fine_tune.{managed_ar}")
             if self.kind == "fine_tune":
                 return (f"«{self.name}» = نموذج مفتوح الوزن {base} (رخصة {lic}) + محوّل/تدريب خاص بك ({self.adapter}) على "
                         f"بيانات متحقَّق منها بمحرك Godot، يعمل {self.serving_label('ar')}. ليس مدرَّبًا من الصفر.")
@@ -127,7 +133,7 @@ class ModelIdentity:
             return (f"'{self.name}' = the open-weight model {base} ({lic}) running {self.serving_label('en')}, with the "
                     f"Godot 4.7.2 tools, API index and engine verification. The weights were not trained by you and not "
                     f"from scratch; the specialisation comes from the harness and data — once you train an adapter the "
-                    f"kind becomes fine_tune.")
+                    f"kind becomes fine_tune.{managed_en}")
         if self.kind == "fine_tune":
             return (f"'{self.name}' = the open-weight base {base} ({lic}) plus your own fine-tune/adapter ({self.adapter}) "
                     f"trained on engine-verified Godot data, running {self.serving_label('en')}. Not trained from scratch.")
@@ -157,11 +163,16 @@ GATEWAY_VENDOR_PREFIXES = ("openai/", "anthropic/", "google-ai-studio/", "google
                            "cerebras/", "aws-bedrock/")
 
 
-def is_vendor_endpoint(provider: str, base_url: str | None, route: str = "direct", model: str = "") -> bool:
+def is_vendor_endpoint(provider: str, base_url: str | None, route: str = "direct", model: str = "",
+                       preset: str = "") -> bool:
     """True when the configured endpoint is a proprietary vendor API (Anthropic, api.openai.com, a vendor
-    behind the AI Gateway). Best effort on purpose: it catches the obvious cases, it does not certify the rest."""
+    behind the AI Gateway, a vendor model id on an aggregator preset). Best effort on purpose: it catches the
+    obvious cases, it does not certify the rest."""
     if provider == "anthropic":
         return True
+    if preset:                                      # hosted preset (godotai/presets.py): judge by the model id
+        from .presets import uses_vendor_model
+        return uses_vendor_model(preset, model)
     if route == "workers_ai":                       # Cloudflare-hosted open weights: managed, not a vendor model
         return False
     if route == "cf_gateway":                       # URL is derived from CF_* env in make_provider; judge by model id
@@ -170,18 +181,25 @@ def is_vendor_endpoint(provider: str, base_url: str | None, route: str = "direct
 
 
 def check_consistency(identity: ModelIdentity, provider: str, model: str, base_url: str | None,
-                      route: str = "direct") -> None:
+                      route: str = "direct", preset: str = "") -> None:
     """Refuse to label a vendor model as yours (and the reverse).
 
     * ``provider = "anthropic"`` is always a vendor API → ``kind`` must be ``vendor_api``.
     * ``openai_compat`` pointed at ``api.openai.com`` (or no URL at all, which defaults to it)
       is a vendor API too.
+    * a proprietary model id (``openai/…``, ``anthropic/…`` …) on the OpenRouter preset is a vendor model.
     * ``kind = "vendor_api"`` with a private/local endpoint is contradictory as well.
+    * a hosted preset can never be ``serving = "self_hosted"`` — the server is the provider's.
     """
-    vendor_endpoint = is_vendor_endpoint(provider, base_url, route, model)
+    if preset and identity.serving == "self_hosted":
+        raise ModelIdentityError(
+            f"[agent].preset = {preset!r} is a hosted endpoint, but [model].serving = 'self_hosted' would present it as your "
+            f"own server. Use serving = \"managed\" (open weights at a provider) or \"vendor\" (a proprietary model).")
+    vendor_endpoint = is_vendor_endpoint(provider, base_url, route, model, preset)
     if vendor_endpoint and identity.kind != "vendor_api":
         who = ("Claude (Anthropic)" if provider == "anthropic" else
-               f"{model!r} through the AI Gateway" if route == "cf_gateway" else f"{model!r} at api.openai.com")
+               f"{model!r} through the AI Gateway" if route == "cf_gateway" else
+               f"{model!r} on the {preset} preset" if preset else f"{model!r} at api.openai.com")
         raise ModelIdentityError(
             f"[agent] uses {who}, a third-party vendor model, but [model].kind = {identity.kind!r} would present it as "
             f"your own model. Set [model].kind = \"vendor_api\" (and serving = \"vendor\") for a vendor model, or point "

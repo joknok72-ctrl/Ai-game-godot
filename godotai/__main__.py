@@ -1,6 +1,7 @@
 """godotai command line.
 
   python3 -m godotai doctor                          # check engine pin, templates, JDK, SDK, keys
+  python3 -m godotai presets                         # hosted free-allowance Qwen endpoints (GODOTAI_PRESET=…), limits + data notes
   python3 -m godotai install-godot [--system]        # download pinned editor + templates (sha512 verified)
   python3 -m godotai setup-android                   # Android SDK + editor settings + debug keystore
   python3 -m godotai new --template mobile-2d --dest ./my-game --name "My Game"
@@ -85,12 +86,21 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"{mark} your model server ({cfg.agent.endpoint}): "
               + ("not probed (GODOTAI_SKIP_MODEL_PROBE is set)" if probe_skipped() else
                  "reachable" if ready else "not reachable — " + hint_en.splitlines()[0]))
+    elif cfg.agent.preset:
+        from . import presets
+        p = presets.get(cfg.agent.preset)
+        missing = p.missing_env()
+        print(f"{'✅' if ready else '➖'} preset {p.id} ({p.label_en}): "
+              + ("keys set" if ready else "not set — export " + ", ".join(missing) + f" (create at {p.signup_url})"))
+        print(f"   free allowance (read {p.verified}): {p.free_en}")
+        print(f"   data handling: {p.data_en}")
     else:
         key_env = "ANTHROPIC_API_KEY" if cfg.agent.provider == "anthropic" else (
-            "CLOUDFLARE_API_TOKEN" if cfg.agent.route == "workers_ai" else "OPENAI_API_KEY")
+            "CF_WORKERS_AI_TOKEN" if cfg.agent.route == "workers_ai" else "OPENAI_API_KEY")
         print(f"{'✅' if ready else '➖'} {key_env}: {'set' if ready else 'not set (needed for plan/run)'}")
     print(f"{'✅' if os.environ.get('GITHUB_TOKEN') else '➖'} GITHUB_TOKEN: {'set' if os.environ.get('GITHUB_TOKEN') else 'not set (needed for GitHub tools)'}")
-    print(f"model: {cfg.agent.provider}/{cfg.agent.model} effort={cfg.agent.effort} endpoint={cfg.agent.endpoint or '(provider default)'}")
+    print(f"model: {cfg.agent.provider}/{cfg.agent.model} effort={cfg.agent.effort} endpoint={cfg.agent.endpoint or '(provider default)'}"
+          + (f" preset={cfg.agent.preset}" if cfg.agent.preset else ""))
     print(f"identity: {ident.name} — {ident.kind_label('en')}"
           + (f" (base {ident.base_model}, {ident.base_license})" if ident.base_model else "")
           + (f", adapter {ident.adapter}" if ident.adapter else "") + f", {ident.serving_label('en')}"
@@ -302,19 +312,22 @@ def cmd_chat(args: argparse.Namespace) -> int:
             sys.exit(f"Cloudflare Access configuration: {exc}")
     public_hosts = list(args.public_host or [])
     public_hosts += [h for h in (os.environ.get("GODOTAI_PUBLIC_HOST") or "").split(",") if h.strip()]
+    public_hosts += platform_public_hosts()
+    port = resolve_port(args.port)
     try:
-        server = ChatServer(cfg, Path(args.games_dir), host=args.host, port=args.port, token=token,
+        server = ChatServer(cfg, Path(args.games_dir), host=args.host, port=port, token=token,
                             auto_approve_default=args.yes or not cfg.agent.require_plan_approval,
                             include_github=not args.no_github, quiet=not args.verbose,
                             access=access, public_hosts=public_hosts, quota=quota)
     except ChatServerError as exc:
         sys.exit(str(exc))
     except OSError as exc:
-        sys.exit(f"cannot listen on {args.host}:{args.port}: {exc} (try --port <other>)")
+        sys.exit(f"cannot listen on {args.host}:{port}: {exc} (try --port <other>)")
     st = environment_status(cfg)
     url = server.url
     ident = cfg.model
-    print(f"godotai chat {__version__} — Godot {cfg.engine.tag} — {cfg.agent.provider}/{cfg.agent.model} effort={cfg.agent.effort}")
+    print(f"godotai chat {__version__} — Godot {cfg.engine.tag} — {cfg.agent.provider}/{cfg.agent.model} effort={cfg.agent.effort}"
+          + (f" preset={cfg.agent.preset}" if cfg.agent.preset else ""))
     print(f"model identity: {ident.name} — {ident.kind_label('en')}"
           + (f" (base {ident.base_model}, {ident.base_license})" if ident.base_model else "") + f", {ident.serving_label('en')}")
     print(f"games directory: {server.manager.games_dir}")
@@ -350,6 +363,11 @@ def cmd_chat(args: argparse.Namespace) -> int:
             detail = "not reachable — the page explains how to start it (nothing is sent until then)"
         mark = "➖" if not srv["probed"] else "✅" if m["ready"] else "❌"
         print(f"{mark} your model server ({m['base_url']}): {detail}")
+    elif m["preset"]:
+        p = m["preset"]
+        print(f"{'✅' if m['ready'] else '❌'} preset {p['id']} ({p['label_en']}): "
+              + ("keys set" if m["ready"] else "missing " + ", ".join(p["missing_env"]) + " — the page explains what to export"))
+        print(f"   free allowance (read {p['verified']}): {p['free_en']}")
     else:
         print(f"{'✅' if m['ready'] else '❌'} model key ({m['key_env']}): "
               + ("set" if m['ready'] else "not set — the page explains what to export before sending a message"))
@@ -376,12 +394,78 @@ def is_loopback_host(host: str) -> bool:
     return is_loopback(host)
 
 
+DEFAULT_CHAT_PORT = 8765
+PLATFORM_HOST_ENVS = ("RAILWAY_PUBLIC_DOMAIN", "RENDER_EXTERNAL_HOSTNAME")   # set by the platform, non-secret hostnames
+
+
+def resolve_port(explicit: int | None, env: dict[str, str] | None = None) -> int:
+    """``--port`` → ``GODOTAI_PORT`` → ``PORT`` (injected by Railway / Render / most PaaS) → 8765."""
+    if explicit is not None:
+        return explicit
+    env = os.environ if env is None else env
+    for name in ("GODOTAI_PORT", "PORT"):
+        raw = (env.get(name) or "").strip()
+        if raw:
+            try:
+                value = int(raw)
+            except ValueError:
+                sys.exit(f"{name} must be an integer port, got {raw!r}")
+            if not 0 <= value <= 65535:                   # 0 = ephemeral port (same meaning as --port 0)
+                sys.exit(f"{name} must be between 0 and 65535, got {value}")
+            return value
+    return DEFAULT_CHAT_PORT
+
+
+def platform_public_hosts(env: dict[str, str] | None = None) -> list[str]:
+    """Hostnames a PaaS assigns to this service (Railway: RAILWAY_PUBLIC_DOMAIN, Render: RENDER_EXTERNAL_HOSTNAME) — accepted
+    in the Host header like ``--public-host`` so the site works without hard-coding the generated domain anywhere."""
+    env = os.environ if env is None else env
+    hosts = []
+    for name in PLATFORM_HOST_ENVS:
+        value = (env.get(name) or "").strip().lower()
+        if value and "/" not in value and " " not in value:
+            hosts.append(value)
+    return hosts
+
+
+def cmd_presets(args: argparse.Namespace) -> int:
+    """List the hosted free-allowance presets with their limits, key variable and data-handling notes (no network)."""
+    from . import presets
+    if args.json:
+        print(json.dumps([presets.PRESETS[k].describe() for k in sorted(presets.PRESETS)], ensure_ascii=False, indent=2))
+        return 0
+    print(f"hosted presets — GODOTAI_PRESET=<id> (facts read from the providers' pages on {presets.VERIFIED}; they change — re-check)")
+    print("none is a forever-free promise; no key or account id is stored in this repository; quality is measured by `eval compare` only\n")
+    for key in sorted(presets.PRESETS):
+        p = presets.PRESETS[key]
+        missing = p.missing_env()
+        print(f"[{p.id}]  {p.label_en}")
+        print(f"   {p.label_ar}")
+        print(f"   model: {p.default_model}  ({p.kind}, serving = {p.serving}; weights {p.base_model}, {p.base_license})")
+        print(f"   endpoint: {p.base_url or p.base_url_hint}")
+        print(f"   env: {p.key_env}" + (f" + {', '.join(p.required_env)}" if p.required_env else "")
+              + (" — all set" if not missing else f" — missing: {', '.join(missing)}") + f"  (key: {p.signup_url})")
+        if p.alternatives:
+            print(f"   alternatives: {'; '.join(p.alternatives)}")
+        print(f"   free: {p.free_en}")
+        print(f"   مجاني: {p.free_ar}")
+        print(f"   data: {p.data_en}")
+        print(f"   risks: {p.risks_en}")
+        print(f"   sources: {' '.join(p.sources)}")
+        print()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="godotai", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", help="path to godot.toml (default: search upward / repo file)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("doctor", help="check the environment against the engine pin").set_defaults(fn=cmd_doctor)
+
+    s = sub.add_parser("presets", help="list the hosted free-allowance model presets (GODOTAI_PRESET) with limits and data notes")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_presets)
 
     s = sub.add_parser("install-godot", help="download + verify + install the pinned editor and templates")
     s.add_argument("--system", action="store_true", help="install to /usr/local/bin (containers)")
@@ -427,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("chat", help="browser chat UI: talk to the AI, approve plans, watch the engine verify")
     s.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1; anything else needs --token)")
-    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--port", type=int, default=None, help="listen port (default: GODOTAI_PORT, else PORT as injected by Railway/Render, else 8765)")
     s.add_argument("--games-dir", default="./games", help="each project is a sub-folder here (default ./games)")
     s.add_argument("--token", help="access token for every API request (env GODOTAI_CHAT_TOKEN); required off-loopback unless Access is configured")
     s.add_argument("--public-host", action="append", metavar="HOST",

@@ -53,6 +53,15 @@ python3 -m godotai chat
   كل ما سيُنفَّذ بلا اتصال. التوكن يُقرأ من متغير بيئة في طرفيتك (أو من سرّ GitHub محمي في `cloudflare-provision.yml`) ولا يُخزَّن.
   **ما تحتاجه أنت ولا توفّره Cloudflare:** نطاق مضاف إلى Cloudflare + جهاز يعمل دائمًا للـ chat والنموذج (أو مسار Workers AI بلا GPU —
   «عند مزوّد استضافة» لا «على خادمك»). **لم يُنشر شيء من هذا المستودع.** وأي توكن لُصق في محادثة يجب عمل *Roll* له فورًا.
+- **مش معي فلوس — كل شيء مجانًا؟** اقرأ [`docs/FREE_TIER.md`](docs/FREE_TIER.md) (بحث سبتمبر 2026 بمصادره). الخلاصة: بدون GPU
+  يمكنك استخدام **Qwen عبر API بحصة مجانية** من مزوّد استضافة — `GODOTAI_PRESET=openrouter_free` أو `groq` أو `alibaba_model_studio`
+  أو `workers_ai` (`python3 -m godotai presets` يعرض الحدود والمفتاح المطلوب وسياسة البيانات لكل واحد؛ المفتاح من حسابك أنت،
+  في متغير بيئة فقط). هذا «نموذج مفتوح الوزن **عند مزوّد**» لا «خادمك الخاص»: طلباتك تُعالَج عندهم. خادم Railway ذو
+  **2 vCPU / 1 GB**: يشغّل **التطبيق فقط** (صورة `deploy/paas/`، قياس 2026-09-26: التحقق بالمحرك يصل إلى ≈ 640 MB) ولا يشغّل أي
+  نموذج Qwen؛ بعد التجربة (30 يومًا / 5$) تصير الخطة المجانية 0.5 GB وهي أقل من اللازم. أقوى خادم لينكس مجاني وجدناه:
+  **Oracle Cloud Always Free** (ARM، 2 OCPU / 12 GB، ببطاقة للتحقق). **لا شيء منشور من هذا المستودع** ولا يمكن نشر موقع دائم
+  بدون حسابك ومفتاحك وتوكن دخول (`GODOTAI_CHAT_TOKEN`) — [`deploy/paas/README.md`](deploy/paas/README.md) يشرح الخطوات.
+  لا حصة مجانية تعني «مجاني للأبد»، ولا أحد هنا يزعم أن Qwen المجاني أقوى من Claude Fable 5.1 Max — الحكم فقط لـ `eval compare`.
 - **بدون متصفح (سطر أوامر):** `python3 -m godotai run "اعمل لعبة Flappy Bird للموبايل" --workspace ./flappy`
   — نفس الوكيل تمامًا، والموافقة على الخطة تكون سؤالًا في الطرفية.
 - **لو ناقص شيء:** الصفحة نفسها تكتب لك بالعربي ما الناقص بالضبط (خادم النموذج؟ المحرك؟) والأمر الذي تنفّذه، و
@@ -122,6 +131,7 @@ python3 -m godotai chat
 | `godotai/chat/access.py` | Cloudflare Access JWT verification (JWKS, RS256, iss/aud/exp) for the public-website mode; `/healthz` is the only unauthenticated route |
 | `godotai/chat/quota.py` | Run quota for shared/public servers: concurrency cap for the whole server + rolling-24 h cap per visitor (Access e-mail); `429` + `Retry-After` before any model work; the cost/abuse brake behind the login |
 | `deploy/cloudflare/` + `scripts/cloudflare_setup.py` | Optional public website: Access app → Tunnel → ingress → DNS via the Cloudflare API (dry-run available), compose file with your model server (vLLM base / vLLM + LoRA / Ollama) and `cloudflared`; no port published, no credential stored |
+| `godotai/presets.py` + `docs/FREE_TIER.md` + `deploy/paas/` | **No budget, no GPU**: `GODOTAI_PRESET=openrouter_free\|groq\|alibaba_model_studio\|workers_ai` switches the agent to a hosted Qwen endpoint with a free allowance (limits, key variable *name*, data-handling notes and sources per preset, `python3 -m godotai presets`); the identity card then says *managed hosting of open weights*, never "your server". `deploy/paas/` is the app-only image (≈ 50 MB idle, ≈ 640 MB during one verification) for a 1 GB host such as the Railway trial or Oracle Always Free — auth token mandatory, quota on, no secret in any file. September-2026 research with sources in `docs/FREE_TIER.md` |
 | `godotai/apiref.py` + `tools/apiref_tools.py` | **ClassDB index generated from the pinned binary** (`--doctool`): `api_lookup`, `api_search`, `api_lint`; advisory lint in every verification |
 | `godotai/evals.py` + `evals/tasks/` | Engine-verified task bank (6 tasks incl. a Godot-3 migration trap and an out-of-scope refusal); scored by the engine + structural checks, never by a model; `eval compare` puts two models side by side on common tasks |
 | `godotai/dataset.py` + `training/` | Verified run logs → redacted SFT JSONL → optional QLoRA fine-tune of the open-weight base (Kaggle T4×2 script kernel included) |
@@ -134,8 +144,8 @@ python3 -m godotai chat
 | `.github/workflows/ci.yml` | Unit tests, byte-compile, secret scan, Cloudflare setup dry-run, JS syntax check, training dry-run, Kaggle self-check, then real-engine API index + template verification + baseline eval on every PR |
 | `.github/workflows/cloudflare-provision.yml` | Manual (`workflow_dispatch`) provisioning of the Access app / tunnel / DNS from a protected GitHub environment secret — dry run by default, tunnel token never stored, identifiers only in the job summary; deploys nothing |
 | `.github/workflows/build-android.yml` | Reusable APK build workflow; the agent copies it into every game repo it creates |
-| `tests/` | 290+ offline unit tests + real-engine integration tests (auto-skipped without the binary); `tests/ui/jsdom_smoke.mjs` drives the chat page's real JavaScript in a DOM against the real server with the scripted model (needs `jsdom`, see its header) |
-| `docs/` | [MODEL](docs/MODEL.md) · [ARCHITECTURE](docs/ARCHITECTURE.md) · [USAGE](docs/USAGE.md) · [RESEARCH](docs/RESEARCH.md) |
+| `tests/` | 360+ offline unit tests + real-engine integration tests (auto-skipped without the binary); `tests/ui/jsdom_smoke.mjs` drives the chat page's real JavaScript in a DOM against the real server with the scripted model (needs `jsdom`, see its header) |
+| `docs/` | [MODEL](docs/MODEL.md) · [ARCHITECTURE](docs/ARCHITECTURE.md) · [USAGE](docs/USAGE.md) · [RESEARCH](docs/RESEARCH.md) · [FREE_TIER](docs/FREE_TIER.md) |
 
 ## Quick start (Linux)
 
@@ -216,6 +226,27 @@ stored). Prerequisites that Cloudflare does **not** provide: a domain on Cloudfl
 the chat + model (or the Workers AI route for a machine without a GPU — labelled *managed*, not your own server). A
 Quick Tunnel (`*.trycloudflare.com`) is for testing only. See [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md).
 Nothing has been deployed by this repository.
+
+### No money, no GPU: hosted Qwen with a free allowance + a small free host (read `docs/FREE_TIER.md` first)
+
+```bash
+python3 -m godotai presets                       # the 4 presets: limits, key variable, data handling, sources (read 2026-09-26)
+export OPENROUTER_API_KEY=<from openrouter.ai/settings/keys>     # your account, this shell only — never a file in the repo
+GODOTAI_PRESET=openrouter_free python3 -m godotai doctor         # identity: "open-weight model hosted by a provider" (managed)
+GODOTAI_PRESET=openrouter_free python3 -m godotai chat           # 20 req/min, 50 req/day without purchased credits (≈ 1 short run)
+# alternatives: GODOTAI_PRESET=groq GROQ_API_KEY=…  |  GODOTAI_PRESET=alibaba_model_studio DASHSCOPE_API_KEY=… GODOTAI_BASE_URL=https://<WorkspaceId>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+#               GODOTAI_PRESET=workers_ai CF_ACCOUNT_ID=… CF_WORKERS_AI_TOKEN=…   (10,000 Neurons/day)
+```
+
+A hosted preset is *not* your private server: the open weights are Qwen's (Apache-2.0), the machine is the provider's, and
+your prompts are processed under its terms (each preset states what is and is not known about retention/training). The
+Railway service you may have (2 vCPU / 1 GB, trial) can run **the app only** with `deploy/paas/Dockerfile`
+(`RAILWAY_DOCKERFILE_PATH=deploy/paas/Dockerfile`, `GODOTAI_CHAT_TOKEN` + preset key as secret variables; measured peak
+≈ 640 MB per verification, so concurrency stays 1) — it cannot run a Qwen model, and the post-trial 0.5 GB plan is too
+small even for the app's verification step. The longest-lived free Linux box found (2026-09-26) is Oracle Cloud Always
+Free (Ampere A1, 2 OCPU / 12 GB, card verification). Steps and limits: [`deploy/paas/README.md`](deploy/paas/README.md).
+None of this is "free forever", every path needs *your* account and key, and no free model is claimed to beat Claude
+Fable 5.1 Max — `python3 -m godotai eval compare` on the same engine-scored tasks is the only judge.
 
 ## Talking to the AI (chat UI)
 

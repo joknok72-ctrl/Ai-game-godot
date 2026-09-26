@@ -9,8 +9,8 @@ values never leave the process.
 The model check is real, not a guess: for a private OpenAI-compatible server the
 endpoint is **probed** (``GET <base>/models``, short timeout, cached a few seconds)
 so the page can say "your model server is not running — start it with …" instead of
-failing on the first message. The vendor providers are checked by key presence only
-(no request is made to them here).
+failing on the first message. The vendor providers and the hosted free-allowance presets
+(``godotai/presets.py``) are checked by key presence only (no request is made to them here).
 """
 from __future__ import annotations
 
@@ -121,6 +121,24 @@ def _start_server_hint(cfg: Config, url: str) -> tuple[str, str]:
     return ar, en
 
 
+def preset_ready(preset_id: str) -> tuple[bool, str, str]:
+    """(ready, hint_ar, hint_en) for a hosted preset: every named environment variable must be set — nothing else is
+    checked from here (no request leaves the process), and values are never reported."""
+    from .. import presets
+    p = presets.get(preset_id)
+    missing = p.missing_env()
+    if not missing:
+        return True, "", ""
+    exports = "\n".join(f"export {name}=<…>" for name in missing)
+    ar = (f"الإعداد الجاهز «{p.label_ar}» يحتاج متغيرات البيئة التالية قبل الإرسال (أنشئ المفتاح من {p.signup_url}):\n"
+          f"{exports}\nثم أعد تشغيل: python3 -m godotai chat — لا تكتب المفتاح في أي ملف داخل المشروع.\n"
+          f"الحصة المجانية ({p.verified}): {p.free_ar}")
+    en = (f"Preset '{p.label_en}' needs these environment variables before anything can be sent (create the key at "
+          f"{p.signup_url}):\n{exports}\nthen restart: python3 -m godotai chat — never write the key into a file of this repo.\n"
+          f"Free allowance ({p.verified}): {p.free_en}")
+    return False, ar, en
+
+
 def model_ready(cfg: Config, probe: Probe | None = None) -> tuple[bool, str, str]:
     """(ready, hint_ar, hint_en): can ``make_provider(cfg.agent).complete()`` be attempted at all?
 
@@ -142,12 +160,16 @@ def model_ready(cfg: Config, probe: Probe | None = None) -> tuple[bool, str, str
                 "Model API key missing. In the same terminal, before starting the server:\n"
                 "export ANTHROPIC_API_KEY=<key from console.anthropic.com>\nthen: python3 -m godotai chat")
     # openai_compat
+    if a.preset:                                  # hosted free-allowance endpoint: key presence only, no request from here
+        return preset_ready(a.preset)
     if a.route == "workers_ai":
-        if _set("CLOUDFLARE_API_TOKEN") and _set("CF_ACCOUNT_ID"):
+        if (_set("CF_WORKERS_AI_TOKEN") or _set("CLOUDFLARE_API_TOKEN")) and _set("CF_ACCOUNT_ID"):
             return True, "", ""
         return (False,
-                "المسار workers_ai يحتاج CF_ACCOUNT_ID و CLOUDFLARE_API_TOKEN (متغيرات بيئة فقط، لا تكتبها في ملفات المشروع).",
-                "route = workers_ai needs CF_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (environment variables only).")
+                "المسار workers_ai يحتاج CF_ACCOUNT_ID و CF_WORKERS_AI_TOKEN (توكن بصلاحية Workers AI فقط؛ متغيرات بيئة فقط، "
+                "لا تكتبها في ملفات المشروع).",
+                "route = workers_ai needs CF_ACCOUNT_ID and CF_WORKERS_AI_TOKEN (a Workers-AI-only token; environment "
+                "variables only).")
     if a.route == "cf_gateway":
         return True, "", ""                       # URL/headers come from CF_* env; make_provider reports what is missing
     url = a.endpoint or ""
@@ -199,21 +221,35 @@ def environment_status(cfg: Config, probe: Probe | None = None) -> dict[str, Any
     ready, hint_ar, hint_en = model_ready(cfg, probe)
     a = cfg.agent
     url = a.endpoint
+    preset_info = None
     if a.provider == "anthropic":
         key_env = "ANTHROPIC_API_KEY"
+    elif a.preset:
+        from .. import presets
+        p = presets.get(a.preset)
+        key_env = p.key_env
+        preset_info = {"id": p.id, "label_ar": p.label_ar, "label_en": p.label_en, "signup_url": p.signup_url,
+                       "free_ar": p.free_ar, "free_en": p.free_en, "data_ar": p.data_ar, "data_en": p.data_en,
+                       "verified": p.verified, "missing_env": p.missing_env()}
     elif a.route == "workers_ai":
-        key_env = "CLOUDFLARE_API_TOKEN"
+        key_env = "CF_WORKERS_AI_TOKEN"
     elif url and "api.openai.com" in url:
         key_env = "OPENAI_API_KEY"
     else:
         key_env = None                            # your own server: no vendor key involved
+    if a.preset:
+        key_set: bool | None = bool(p.key())
+    elif a.route == "workers_ai" and not a.preset:
+        key_set = _set("CF_WORKERS_AI_TOKEN") or _set("CLOUDFLARE_API_TOKEN")
+    else:
+        key_set = _set(key_env) if key_env else None
     server: dict[str, Any] = {"probed": False, "reachable": None, "models": [], "model_listed": None, "error": None}
     if a.private_endpoint and url and not probe_skipped():
         r = cached_probe(url, probe)
         server.update(probed=True, reachable=r["reachable"], models=r["models"][:50], error=r["error"],
                       model_listed=(a.model in r["models"]) if r["models"] else None)
-    model = {"provider": a.provider, "model": a.model, "effort": a.effort, "route": a.route,
-             "key_env": key_env, "key_set": _set(key_env) if key_env else None, "ready": ready,
+    model = {"provider": a.provider, "model": a.model, "effort": a.effort, "route": a.route, "preset": preset_info,
+             "key_env": key_env, "key_set": key_set, "ready": ready,
              "hint_ar": hint_ar, "hint_en": hint_en, "base_url": url, "private": a.private_endpoint,
              "server": server, "identity": cfg.model.describe()}
 

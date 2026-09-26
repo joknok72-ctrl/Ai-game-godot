@@ -308,6 +308,41 @@ Raw copies of the pages are kept outside the repository (they are large); the nu
 - Nothing was deployed; no Cloudflare API request was made; the user's pasted token was neither used nor stored, and
   must be rolled.
 
+### 4.4 Zero-budget path: hosted Qwen APIs with a free allowance + small free Linux hosts (added 2026-09-26)
+
+The full write-up, Arabic first, with every quota/limit/data-handling statement and its source, is
+[`docs/FREE_TIER.md`](FREE_TIER.md); the machine-readable form is `godotai/presets.py` (`python3 -m godotai presets --json`).
+Only the conclusions that changed the code are repeated here:
+
+- **[verified]** OpenRouter `qwen/qwen3.8-27b:free` — $0/M tokens, platform caps of 20 requests/minute and 50 requests/day
+  (1,000/day after 10 credits were bought once); retention/training is *per upstream provider* and configurable in the
+  account. → preset `openrouter_free`.
+- **[verified]** Groq `qwen/qwen3.8-27b` (Preview): 131,072-token context, 16,384 max completion tokens — the request cap
+  is clamped to that; the published 30 RPM / 1,000 RPD / 8K TPM / 200K TPD table is explicitly labelled *Developer-plan
+  base limits*, so the free allowance is "whatever your Limits page says", not a number this project promises.
+  **[secondary]** OpenRouter's provider table lists Groq as zero-retention / no training; no concise primary statement
+  was found. → preset `groq`.
+- **[verified]** Alibaba Cloud Model Studio (Singapore): per-model free quota (typically 1,000,000 tokens) valid **90 days**
+  from activation; pay-as-you-go starts automatically afterwards unless *Free Quota Only* (off by default) is enabled;
+  the OpenAI-compatible endpoint embeds the user's **workspace id**, so the preset has no fixed URL. The official privacy
+  article did not load readably (four attempts; script-rendered) → data handling recorded as *not established from a primary source*.
+  → preset `alibaba_model_studio`.
+- **[verified]** Cloudflare Workers AI: 10,000 Neurons/day on the Free plan; `@cf/qwen/qwen3-30b-a3b-fp8` costs 4,625 /
+  30,475 Neurons per M input / output tokens; customer content is not used for training without explicit consent.
+  → preset `workers_ai` (route `workers_ai`).
+- **[verified]** Railway Trial: 30 days / $5 once, per service 2 vCPU · 1 GB RAM · 1 GB ephemeral · 0.5 GB volume · 4 GB
+  image; Limited Trial may block outbound network; Free plan afterwards $1/month at 0.5 GB / 1 vCPU; Config-as-Code is
+  deprecated (no `railway.toml` added). **[measured]** `python3 -m godotai verify` on the `mobile-2d` template peaks at
+  ≈ 642 MB RSS (Godot 4.7.2 headless, x86_64), the chat server idles at ≈ 50 MB → `deploy/paas/` runs the **app only**
+  on 1 GB with concurrency 1; no Qwen model fits; 0.5 GB does not fit the verification path.
+- **[verified]** Oracle Cloud Always Free A1: 2 OCPU / 12 GB total, 200 GB block storage, life of the account, idle
+  reclamation after 7 days below 20 % CPU/network/memory; Render Free 512 MB + sleep after 15 min; Google Cloud one
+  `e2-micro`; Hugging Face Docker Spaces need a paid plan; GitHub Actions is free for public repositories but is not a
+  server; Fly.io / Koyeb were not confirmed as permanent free hosts.
+- **[assumption]** Whether a 27B/30B hosted Qwen drives this agent's tool loop acceptably is unknown until
+  `eval compare` runs on the same tasks; no quality claim is made, and the default private-deployment configuration is
+  unchanged — a preset is an opt-in.
+
 ## 5. Kaggle — a batch GPU, not a server
 
 Sources (read 2026-09-26): https://www.kaggle.com/docs/notebooks , https://www.kaggle.com/docs/tpu ,
