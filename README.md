@@ -135,6 +135,10 @@ Verified on 2026-09-26 in a Linux sandbox with the official `Godot_v4.7.2-stable
 - ✅ `eval score --task template-baseline` passes on the template with the real engine (import, check-only,
   smoke test, API lint, structural checks, ≥ 90 % static typing).
 - ✅ Dataset extraction → `train_qlora.py --dry-run` round-trip on synthetic verified runs; repo-wide secret scan clean.
+- ✅ `ci.yml` passed again on a GitHub-hosted runner for PR #2 (run #5): 201 tests without the engine, then the
+  runner installed the pinned editor, built the ClassDB index from it (same 1 076 / 10 731 / 6 999 / 503 / 6 012
+  counts), verified the template, ran the 201 tests *with* the engine, and `eval score --task template-baseline`
+  reported **PASS**; secret scan, training dry-run and `kaggle_push.py --check` all passed credential-free.
 
 Not yet verified (implemented, but no evidence of success — treat as untested):
 
