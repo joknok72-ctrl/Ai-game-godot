@@ -1,0 +1,19 @@
+{
+  "id": "template-baseline",
+  "title": "mobile-2d template must pass every check unchanged",
+  "tags": ["baseline", "no-llm", "ci"],
+  "template": "mobile-2d",
+  "prompt": "Do not change gameplay. Only run godot_verify and report the result.",
+  "checks": [
+    {"type": "file_exists", "path": "project.godot"},
+    {"type": "file_exists", "path": "export_presets.cfg"},
+    {"type": "smoke_test"},
+    {"type": "content_regex", "path": "project.godot", "pattern": "window/handheld/orientation=1"},
+    {"type": "content_regex", "path": "project.godot", "pattern": "window/stretch/mode=\"canvas_items\""},
+    {"type": "content_regex", "path": "project.godot", "pattern": "import_etc2_astc=true"},
+    {"type": "any_script_regex", "pattern": "InputEventScreenTouch"},
+    {"type": "typed_gdscript", "min_ratio": 0.9},
+    {"type": "no_api_lint_errors"},
+    {"type": "no_script_regex", "pattern": "\\byield\\s*\\(|\\.instance\\s*\\(\\)|^\\s*export var"}
+  ]
+}

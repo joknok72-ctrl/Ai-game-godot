@@ -9,7 +9,11 @@ into a structured report the model has to react to:
 3. --import           — every resource imports without errors
 4. --check-only       — every .gd file parses (static analysis by the engine)
 5. smoke test         — tests/smoke_test.gd (SceneTree script) or --quit-after N frames
-6. gdlint (optional)  — style/lint if gdtoolkit is installed
+6. API lint (advisory)— Godot-3 idioms / classes unknown to the pinned engine (ClassDB index)
+7. gdlint (optional)  — style/lint if gdtoolkit is installed
+
+Steps 6–7 are advisory: they are reported to the model but never fail a build
+that the real engine accepted.
 """
 from __future__ import annotations
 
@@ -193,6 +197,23 @@ def check_project_file(project: Path, cfg: Config) -> StepResult:
     return StepResult("project.godot", not problems, "ok" if not problems else "; ".join(problems), problems)
 
 
+def api_lint_step(project: Path, godot: Godot) -> StepResult:
+    """Advisory: Godot-3 idioms and unknown class names, using the engine-generated API index."""
+    from . import apiref  # local import: apiref imports gd_scripts from this module
+    try:
+        index = apiref.build_index(godot)
+    except Exception as exc:  # advisory step: a doctool/cache problem must never block verification
+        index = None
+        note = f" (index unavailable: {type(exc).__name__}: {exc}; only Godot-3 idiom patterns checked)"
+    else:
+        note = ""
+    findings = apiref.lint_project(project, index)
+    lines = apiref.format_findings(findings)
+    n_err = sum(1 for fs in findings.values() for f in fs if f.severity == "error")
+    summary = "clean" if not lines else f"{len(lines)} finding(s), {n_err} likely Godot-3/invalid API — fix them"
+    return StepResult("API lint vs ClassDB (advisory)", True, summary + note, warnings=lines)
+
+
 def verify_project(project: Path, cfg: Config, godot: Godot | None = None,
                    frames: int | None = None, run_lint: bool = True) -> VerificationReport:
     project = Path(project).resolve()
@@ -247,7 +268,11 @@ def verify_project(project: Path, cfg: Config, godot: Godot | None = None,
         r = godot.run_headless(project, frames=frames)
         report.add(_step_from_run(f"headless run ({frames} frames)", r, "ran without script errors"))
 
-    # 6. optional lint -----------------------------------------------------
+    # 6. API lint against the pinned ClassDB (advisory) ---------------------
+    if run_lint and scripts:
+        report.add(api_lint_step(project, godot))
+
+    # 7. optional lint -----------------------------------------------------
     if run_lint and scripts and shutil.which("gdlint"):
         try:
             proc = subprocess.run(["gdlint", *[str(s) for s in scripts]], capture_output=True, text=True,

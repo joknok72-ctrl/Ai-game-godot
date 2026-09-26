@@ -8,6 +8,12 @@
   python3 -m godotai export --project ./my-game --out build/game.apk [--release]
   python3 -m godotai plan "make a 2D endless runner" --workspace ./my-game
   python3 -m godotai run  "make a 2D endless runner" --workspace ./my-game [--yes]
+  python3 -m godotai apiref build [--docs-dir godot/doc/classes] [--force]   # ClassDB index from the pinned binary
+  python3 -m godotai apiref lookup CharacterBody2D move_and_slide             # exact signature
+  python3 -m godotai apiref search "change scene"                              # name search
+  python3 -m godotai apiref lint --project ./my-game                           # Godot-3 idioms / unknown classes
+  python3 -m godotai eval list | run <task-id> --workspace DIR [--yes] | score --task <id> --project DIR
+  python3 -m godotai dataset extract --runs ./my-game/.godotai/runs --out data/train.jsonl
 """
 from __future__ import annotations
 
@@ -61,6 +67,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     es = editor_settings_path(eng)
     has_paths = es.is_file() and "export/android/android_sdk_path" in es.read_text(encoding="utf-8", errors="replace")
     row("editor settings for Android export", has_paths, str(es))
+    from . import apiref
+    idx = apiref.load_index(eng)
+    print(f"{'✅' if idx else '➖'} API index (ClassDB of {eng.tag}): "
+          + (f"{idx.stats()['classes']} classes at {idx.path}" if idx else
+             f"not built yet — built on first api_lookup, or: python3 -m godotai apiref build"))
     print(f"{'✅' if shutil.which('gdlint') else '➖'} gdlint (optional): {shutil.which('gdlint') or 'not installed (pip install gdtoolkit)'}")
     key_env = "ANTHROPIC_API_KEY" if cfg.agent.provider == "anthropic" else "OPENAI_API_KEY"
     print(f"{'✅' if os.environ.get(key_env) else '➖'} {key_env}: {'set' if os.environ.get(key_env) else 'not set (needed for plan/run)'}")
@@ -136,6 +147,78 @@ def cmd_export(args: argparse.Namespace) -> int:
         return 0
     print(f"\n❌ export failed (exit {res.returncode}, file exists: {out.is_file()})")
     return 1
+
+
+def cmd_apiref(args: argparse.Namespace) -> int:
+    from . import apiref
+    cfg = _cfg(args)
+    if args.action == "build":
+        try:
+            g = Godot(cfg.engine)
+            idx = apiref.build_index(g, docs_dir=Path(args.docs_dir) if args.docs_dir else None, force=args.force)
+        except (GodotNotFound, GodotVersionMismatch, apiref.ApiRefError) as exc:
+            sys.exit(str(exc))
+        st = idx.stats()
+        print(f"API index for Godot {idx.engine_tag} ({idx.engine_version}) → {idx.path}")
+        print(f"  {st['classes']} classes, {st['methods']} methods, {st['properties']} properties, "
+              f"{st['signals']} signals, {st['constants']} constants; descriptions: {'yes' if idx.has_descriptions else 'no (ClassDB only)'}")
+        return 0
+    idx = apiref.load_index(cfg.engine)
+    if idx is None:
+        try:
+            idx = apiref.build_index(Godot(cfg.engine))
+        except (GodotNotFound, GodotVersionMismatch, apiref.ApiRefError) as exc:
+            sys.exit(f"API index not built and cannot build it: {exc}")
+    if args.action == "lookup":
+        text = idx.render_class(args.class_name, args.member)
+        print(text)
+        return 1 if ("does not exist" in text or "has no member" in text) else 0
+    if args.action == "search":
+        hits = idx.search(args.query, args.limit)
+        print("\n".join(hits) or "no matches")
+        return 0 if hits else 1
+    if args.action == "lint":
+        findings = apiref.lint_project(Path(args.project), idx)
+        lines = apiref.format_findings(findings, limit=500)
+        print("\n".join(lines) or "api_lint: no findings")
+        return 1 if any(f.severity == "error" for fs in findings.values() for f in fs) else 0
+    return 2
+
+
+def cmd_eval(args: argparse.Namespace) -> int:
+    from . import evals
+    cfg = _cfg(args)
+    if args.action == "list":
+        for t in evals.load_tasks(cfg.root):
+            print(f"{t.id:24} {t.title}  [{', '.join(t.tags)}]")
+        return 0
+    task = evals.get_task(cfg.root, args.task)
+    if task is None:
+        sys.exit(f"unknown task {args.task!r}; see: python3 -m godotai eval list")
+    if args.action == "score":
+        result = evals.score_project(task, Path(args.project), cfg)
+        print(result.to_markdown())
+        return 0 if result.passed else 1
+    if args.action == "run":
+        from .agent import Agent
+        from .providers import make_provider
+        from .tools import build_registry
+        provider = make_provider(cfg.agent)
+        approve = (lambda p: (True, "")) if (args.yes or not cfg.agent.require_plan_approval) else _approve_interactive
+        agent = Agent(cfg, Path(args.workspace), provider, build_registry(include_github=False), approve=approve,
+                      on_text=lambda t: print(f"\n🤖 {t}\n"))
+        result = evals.run_task(task, agent, cfg, results_dir=Path(args.results_dir) if args.results_dir else None)
+        print(result.to_markdown())
+        return 0 if result.passed else 1
+    return 2
+
+
+def cmd_dataset(args: argparse.Namespace) -> int:
+    from . import dataset
+    stats = dataset.extract(Path(args.runs), Path(args.out), include_failed=args.include_failed,
+                            min_iterations=args.min_iterations)
+    print(json.dumps(stats, indent=2))
+    return 0 if stats["examples"] else 1
 
 
 def _approve_interactive(plan) -> tuple[bool, str]:
@@ -218,6 +301,43 @@ def main(argv: list[str] | None = None) -> int:
         s.add_argument("--yes", action="store_true", help="auto-approve the plan")
         s.add_argument("--no-github", action="store_true", help="do not expose GitHub tools")
         s.set_defaults(fn=lambda a, po=plan_only: cmd_run(a, plan_only=po))
+
+    s = sub.add_parser("apiref", help="engine-generated API index: build / lookup / search / lint")
+    asub = s.add_subparsers(dest="action", required=True)
+    b = asub.add_parser("build", help="run --doctool on the pinned binary and cache the index")
+    b.add_argument("--docs-dir", help="checkout of godot/doc/classes for the same tag → adds descriptions")
+    b.add_argument("--force", action="store_true")
+    lk = asub.add_parser("lookup", help="class or class + member")
+    lk.add_argument("class_name")
+    lk.add_argument("member", nargs="?")
+    se = asub.add_parser("search", help="search names")
+    se.add_argument("query")
+    se.add_argument("--limit", type=int, default=20)
+    li = asub.add_parser("lint", help="lint a project's scripts against the index")
+    li.add_argument("--project", required=True)
+    s.set_defaults(fn=cmd_apiref)
+
+    s = sub.add_parser("eval", help="engine-verified task bank: list / run / score")
+    esub = s.add_subparsers(dest="action", required=True)
+    esub.add_parser("list")
+    r = esub.add_parser("run", help="run the agent on a task, then score the result")
+    r.add_argument("task")
+    r.add_argument("--workspace", required=True)
+    r.add_argument("--yes", action="store_true")
+    r.add_argument("--results-dir")
+    sc = esub.add_parser("score", help="score an existing project against a task (no LLM)")
+    sc.add_argument("--task", required=True)
+    sc.add_argument("--project", required=True)
+    s.set_defaults(fn=cmd_eval)
+
+    s = sub.add_parser("dataset", help="extract training examples from engine-verified run logs")
+    dsub = s.add_subparsers(dest="action", required=True)
+    ex = dsub.add_parser("extract")
+    ex.add_argument("--runs", required=True, help="directory with .godotai/runs/*.json logs (searched recursively)")
+    ex.add_argument("--out", required=True, help="output .jsonl")
+    ex.add_argument("--include-failed", action="store_true", help="also keep runs whose verification never passed")
+    ex.add_argument("--min-iterations", type=int, default=2)
+    s.set_defaults(fn=cmd_dataset)
 
     args = p.parse_args(argv)
     if args.cmd == "new" and not args.list and not args.dest:

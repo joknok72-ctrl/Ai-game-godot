@@ -114,6 +114,11 @@ class AndroidConfig:
     preset_name: str = "Android"
 
 
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+ROUTES = ("direct", "cf_gateway", "workers_ai")
+TASK_BUDGET_MIN = 20_000   # documented minimum for output_config.task_budget.total
+
+
 @dataclass(frozen=True)
 class AgentConfig:
     provider: str = "anthropic"
@@ -126,12 +131,34 @@ class AgentConfig:
     require_plan_approval: bool = True
     strict_tools: bool = False
     base_url: str | None = None
+    # --- Claude Fable 5.1 harness controls (all documented in docs/RESEARCH.md, read 2026-09-26) ---
+    act_effort: str | None = None        # effort from plan approval onward (per-message effort, beta); None = same as effort
+    batch_nudge: bool = True             # documented one-sentence nudge after every tool-result message
+    long_output_note: bool = True        # documented max_tokens note appended to the task at xhigh/max effort
+    progress_updates: bool = False       # beta: thinking.display="updates" → status lines between tool calls
+    turn_scoped_system: bool = False     # beta: nudges as role:system + clear_at instead of a text block
+    task_budget_tokens: int | None = None  # beta: advisory whole-task budget (output_config.task_budget)
+    prefix_binding_drop: bool = False    # beta: drop (and report) thinking blocks whose prefix changed — debugging aid
+    route: str = "direct"                # direct | cf_gateway (Cloudflare AI Gateway) | workers_ai (Cloudflare Workers AI)
 
     def __post_init__(self) -> None:
         if self.provider not in ("anthropic", "openai_compat"):
             raise ConfigError("agent.provider must be 'anthropic' or 'openai_compat'")
-        if self.effort not in ("low", "medium", "high", "xhigh", "max"):
+        if self.effort not in EFFORT_LEVELS:
             raise ConfigError("agent.effort must be one of low|medium|high|xhigh|max")
+        if self.act_effort is not None and self.act_effort not in EFFORT_LEVELS:
+            raise ConfigError("agent.act_effort must be one of low|medium|high|xhigh|max")
+        if self.task_budget_tokens is not None and self.task_budget_tokens < TASK_BUDGET_MIN:
+            raise ConfigError(f"agent.task_budget_tokens must be ≥ {TASK_BUDGET_MIN} (documented minimum)")
+        if self.route not in ROUTES:
+            raise ConfigError("agent.route must be one of direct|cf_gateway|workers_ai")
+        if self.route == "workers_ai" and self.provider != "openai_compat":
+            raise ConfigError("agent.route = workers_ai requires agent.provider = openai_compat")
+
+    @property
+    def uses_beta(self) -> bool:
+        return bool(self.progress_updates or self.turn_scoped_system or self.task_budget_tokens
+                    or self.prefix_binding_drop or (self.act_effort and self.act_effort != self.effort))
 
 
 @dataclass(frozen=True)
@@ -172,7 +199,9 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         "GODOTAI_PROVIDER": (agent, "provider"),
         "GODOTAI_MODEL": (agent, "model"),
         "GODOTAI_EFFORT": (agent, "effort"),
+        "GODOTAI_ACT_EFFORT": (agent, "act_effort"),
         "GODOTAI_BASE_URL": (agent, "base_url"),
+        "GODOTAI_ROUTE": (agent, "route"),
         "GODOTAI_ENGINE_VERSION": (engine, "version"),
         "GODOTAI_ENGINE_RELEASE": (engine, "release"),
     }
@@ -180,6 +209,25 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         value = os.environ.get(env_name)
         if value:
             section[key] = value
+    bool_mapping = {
+        "GODOTAI_PROGRESS_UPDATES": "progress_updates",
+        "GODOTAI_BATCH_NUDGE": "batch_nudge",
+        "GODOTAI_TURN_SCOPED_SYSTEM": "turn_scoped_system",
+        "GODOTAI_PREFIX_BINDING_DROP": "prefix_binding_drop",
+        "GODOTAI_LONG_OUTPUT_NOTE": "long_output_note",
+    }
+    for env_name, key in bool_mapping.items():
+        value = os.environ.get(env_name)
+        if value:
+            agent[key] = value.strip().lower() in ("1", "true", "yes", "on")
+    budget = os.environ.get("GODOTAI_TASK_BUDGET")
+    if budget:
+        try:
+            agent["task_budget_tokens"] = int(budget)
+        except ValueError as exc:
+            raise ConfigError(f"GODOTAI_TASK_BUDGET must be an integer, got {budget!r}") from exc
+    if agent.get("task_budget_tokens") == 0:      # 0 (toml or env) = feature off, same as unset
+        agent["task_budget_tokens"] = None
     return data
 
 

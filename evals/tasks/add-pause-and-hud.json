@@ -1,0 +1,15 @@
+{
+  "id": "add-pause-and-hud",
+  "title": "Extend the template: pause button + best-score HUD persisted with ConfigFile",
+  "tags": ["extend", "ui", "persistence", "mobile"],
+  "template": "mobile-2d",
+  "prompt": "Extend this existing game without breaking it: add a Pause button (top-right, large touch target) that toggles get_tree().paused and shows a semi-transparent 'Paused — tap to resume' overlay; add a 'Best' label to the HUD that stores and reloads the best score with ConfigFile at user://save.cfg; keep tests/smoke_test.gd passing and add a check that the best score is loaded as a float. Everything must pass godot_verify.",
+  "checks": [
+    {"type": "any_script_regex", "pattern": "get_tree\\(\\)\\.paused"},
+    {"type": "any_script_regex", "pattern": "ConfigFile"},
+    {"type": "any_script_regex", "pattern": "user://"},
+    {"type": "smoke_test"},
+    {"type": "typed_gdscript", "min_ratio": 0.85},
+    {"type": "no_api_lint_errors"}
+  ]
+}

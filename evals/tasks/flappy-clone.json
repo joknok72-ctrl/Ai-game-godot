@@ -1,0 +1,16 @@
+{
+  "id": "flappy-clone",
+  "title": "Flappy-style one-tap game with CharacterBody2D physics and object pooling",
+  "tags": ["from-scratch", "mobile", "2d", "physics"],
+  "prompt": "Build a one-tap flappy-style game for Android in this empty folder: a CharacterBody2D bird with gravity (set velocity then move_and_slide()), tap anywhere to flap, pipe pairs spawned from a pooled set of scenes scrolling left with a random gap, score +1 per pipe passed, Game Over with restart. Portrait 720x1280, gl_compatibility. Include tests/smoke_test.gd that runs the main scene ~2 s and prints SMOKE_TEST_OK. Must pass godot_verify.",
+  "checks": [
+    {"type": "any_script_regex", "pattern": "extends CharacterBody2D"},
+    {"type": "any_script_regex", "pattern": "move_and_slide\\(\\)"},
+    {"type": "no_script_regex", "pattern": "move_and_slide\\([^)]"},
+    {"type": "any_script_regex", "pattern": "InputEventScreenTouch"},
+    {"type": "smoke_test"},
+    {"type": "typed_gdscript", "min_ratio": 0.8},
+    {"type": "no_api_lint_errors"},
+    {"type": "min_lines", "min": 120}
+  ]
+}

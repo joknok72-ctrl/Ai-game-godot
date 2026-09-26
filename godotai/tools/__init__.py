@@ -5,10 +5,11 @@ from .base import Phase, Tool, ToolContext, ToolRegistry, ToolResult
 
 
 def build_registry(include_github: bool = True) -> ToolRegistry:
-    from . import fs, github_tools, godot_tools, knowledge, plan_tool
+    from . import apiref_tools, fs, github_tools, godot_tools, knowledge, plan_tool
 
     reg = ToolRegistry()
     knowledge.register(reg)
+    apiref_tools.register(reg)
     fs.register(reg)
     plan_tool.register(reg)
     godot_tools.register(reg)

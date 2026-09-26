@@ -1,0 +1,19 @@
+{
+  "id": "tap-dodge-from-scratch",
+  "title": "Empty folder → complete vertical tap-dodge mobile game",
+  "tags": ["from-scratch", "mobile", "2d", "arcade"],
+  "prompt": "Create a complete Android-first 2D arcade game in this empty folder: the player is a square at the bottom that follows the finger horizontally (touch/drag; arrow keys on desktop); blocks fall from the top faster over time; the score is seconds survived; colliding with a block shows a Game Over overlay with the score and a 'Tap to restart' button. Portrait 720x1280, canvas_items stretch, gl_compatibility renderer. Include tests/smoke_test.gd (SceneTree script) that loads the main scene, runs ~2 s and prints SMOKE_TEST_OK. Everything must pass godot_verify.",
+  "checks": [
+    {"type": "file_exists", "path": "project.godot"},
+    {"type": "file_exists", "path": "scenes/main.tscn"},
+    {"type": "file_glob_min", "glob": "*.gd", "min": 3},
+    {"type": "smoke_test"},
+    {"type": "content_regex", "path": "project.godot", "pattern": "window/handheld/orientation=1"},
+    {"type": "content_regex", "path": "project.godot", "pattern": "renderer/rendering_method=\"gl_compatibility\""},
+    {"type": "any_script_regex", "pattern": "InputEventScreenTouch|InputEventScreenDrag"},
+    {"type": "any_script_regex", "pattern": "(?i)game.?over|restart"},
+    {"type": "typed_gdscript", "min_ratio": 0.8},
+    {"type": "no_api_lint_errors"},
+    {"type": "min_lines", "min": 120}
+  ]
+}

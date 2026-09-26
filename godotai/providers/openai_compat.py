@@ -47,7 +47,7 @@ class OpenAICompatProvider(Provider):
 
     def complete(self, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ModelTurn:
         body = self.build_request(system, messages, tools)
-        data = self.transport(self.url, {"Authorization": f"Bearer {self.api_key}"}, body)
+        data = self.transport(self.url, {"Authorization": f"Bearer {self.api_key}", **self.extra_headers}, body)
         if "error" in data and not data.get("choices"):
             raise ProviderError(str(data["error"]))
         choice = (data.get("choices") or [{}])[0]
@@ -75,6 +75,11 @@ class OpenAICompatProvider(Provider):
     def user_message(self, text: str) -> dict[str, Any]:
         return {"role": "user", "content": text}
 
-    def tool_results_message(self, results: list[tuple[ToolCall, str, bool]]) -> list[dict[str, Any]]:
-        return [{"role": "tool", "tool_call_id": call.id, "content": (("ERROR: " if is_error else "") + content)}
-                for call, content, is_error in results]
+    def tool_results_message(self, results: list[tuple[ToolCall, str, bool]],
+                             nudge: str | None = None) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = [
+            {"role": "tool", "tool_call_id": call.id, "content": (("ERROR: " if is_error else "") + content)}
+            for call, content, is_error in results]
+        if nudge:
+            out.append({"role": "user", "content": nudge})
+        return out

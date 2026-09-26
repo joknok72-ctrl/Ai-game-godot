@@ -17,16 +17,34 @@ templates/**/.godot/
 *.pck
 export/
 
-# Secrets — keystores and credentials must never be committed
+# Secrets — keystores and credentials must never be committed (see SECURITY.md)
 *.keystore
 *.jks
 *.p12
 *.pem
+*.key
+*.token
 .env
 .env.*
+.netrc
+kaggle.json
+.kaggle/
+access_token
+credentials.json
+service-account*.json
+*.secret
 
-# Agent run logs (may contain full model transcripts)
+# Agent run logs (full model transcripts) and generated artefacts
 .godotai/runs/
+evals/results/
+data/
+training/output/
+training/kaggle/output/
+*.jsonl
+
+# Engine-generated API index cache (rebuilt from the pinned binary in ~2 s)
+.cache/
+apiref-cache/
 
 # Editor / OS noise
 .idea/
