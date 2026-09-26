@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "godotai"
+version = "0.1.0"
+description = "A plan-first AI agent specialised in building games with Godot Engine 4.7.2-stable (GDScript, Linux, Android APK)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+# Deliberately zero runtime dependencies: stdlib only (tomllib, urllib, subprocess, zipfile, hashlib).
+dependencies = []
+
+[project.optional-dependencies]
+lint = ["gdtoolkit==4.*"]   # gdlint / gdformat — advisory step of the verification pipeline
+
+[project.scripts]
+godotai = "godotai.__main__:main"
+
+[tool.setuptools]
+packages = ["godotai", "godotai.providers", "godotai.tools"]
+
+[tool.setuptools.package-data]
+godotai = ["prompts/*.md"]

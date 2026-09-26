@@ -1,0 +1,43 @@
+# Continuous verification of the agent itself and of the template game.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests (stdlib unittest, no network)
+        run: python3 -m unittest discover -s tests -v
+      - name: Byte-compile package
+        run: python3 -m compileall -q godotai
+
+  godot-verify-template:
+    runs-on: ubuntu-latest
+    needs: python-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned Godot editor (checksums pinned in repo)
+        run: python3 -m godotai install-godot --editor-only --bin-dir "$HOME/.local/bin"
+      - name: Doctor
+        run: PATH="$HOME/.local/bin:$PATH" python3 -m godotai doctor || true
+      - name: Scaffold a game from the template and verify it with the real engine
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          python3 -m godotai new --template mobile-2d --dest /tmp/game --name "CI Game" --package com.example.cigame
+          python3 -m godotai verify --project /tmp/game --json /tmp/verify.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verification-report
+          path: /tmp/verify.json
