@@ -30,7 +30,8 @@ import os
 ENV_ACCOUNT_ID = "CF_ACCOUNT_ID"          # non-secret identifier
 ENV_GATEWAY_ID = "CF_AIG_GATEWAY"         # gateway name, non-secret
 ENV_GATEWAY_TOKEN = "CF_AIG_TOKEN"        # secret: authenticated-gateway token (optional)
-ENV_API_TOKEN = "CLOUDFLARE_API_TOKEN"    # secret: Workers AI bearer token
+ENV_WORKERS_AI_TOKEN = "CF_WORKERS_AI_TOKEN"   # secret: a token with *Workers AI: Read* only — the preferred name
+ENV_API_TOKEN = "CLOUDFLARE_API_TOKEN"         # secret: legacy fallback; never reuse the Tunnel/Access/DNS setup token here
 
 GATEWAY_BASE = "https://gateway.ai.cloudflare.com/v1"
 WORKERS_AI_BASE = "https://api.cloudflare.com/client/v4/accounts"
@@ -68,4 +69,14 @@ def workers_ai_base_url(account_id: str | None = None) -> str:
 
 
 def workers_ai_api_key() -> str:
-    return _require(ENV_API_TOKEN)
+    """The bearer token for Workers AI: ``CF_WORKERS_AI_TOKEN`` (a token that can *only* run Workers AI), else the
+    legacy ``CLOUDFLARE_API_TOKEN``. Keeping a separate name makes it hard to hand the chat container the far more
+    powerful Tunnel/Access/DNS setup token by accident."""
+    value = os.environ.get(ENV_WORKERS_AI_TOKEN, "").strip()
+    if value:
+        return value
+    value = os.environ.get(ENV_API_TOKEN, "").strip()
+    if value:
+        return value
+    raise CloudflareRouteError(f"{ENV_WORKERS_AI_TOKEN} is not set (a Cloudflare API token with the Workers AI Read "
+                               f"permission only; needed for route = workers_ai — see docs/USAGE.md)")

@@ -11,6 +11,7 @@ buttons; the engine verification report is shown as the model produces it.
 from __future__ import annotations
 
 from .access import AccessError, AccessVerifier
+from .quota import QuotaExceeded, RunQuota, identity_of
 from .server import ChatServer, ChatServerError, is_loopback, valid_public_host
 from .session import (Session, SessionBusy, SessionError, SessionManager, SessionNotReady, NoPendingPlan,
                       slugify)
@@ -18,6 +19,7 @@ from .status import environment_status, model_ready
 
 __all__ = [
     "AccessError", "AccessVerifier",
+    "QuotaExceeded", "RunQuota", "identity_of",
     "ChatServer", "ChatServerError", "is_loopback", "valid_public_host",
     "Session", "SessionBusy", "SessionError", "SessionManager", "SessionNotReady", "NoPendingPlan", "slugify",
     "environment_status", "model_ready",

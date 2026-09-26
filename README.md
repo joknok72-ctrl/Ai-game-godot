@@ -49,8 +49,10 @@ python3 -m godotai chat
 - **أقوى من Claude Fable 5.1 (Max)؟** لا يُقال هذا هنا إلا كنتيجة `python3 -m godotai eval compare` على نفس المهام وبحُكم المحرك؛
   بلا نتائج مشتركة يطبع **NO EVIDENCE**. لا وعود.
 - **موقع عام لك (اختياري):** `deploy/cloudflare/` — Cloudflare Tunnel (لا منفذ مفتوح على خادمك) + Cloudflare Access (تسجيل دخول
-  ببريدك فقط) + الخادم يتحقق من توقيع Access في كل طلب؛ `scripts/cloudflare_setup.py --dry-run` يعرض كل ما سيُنفَّذ بلا اتصال.
-  التوكن يُقرأ من متغير بيئة في طرفيتك فقط ولا يُخزَّن. **لم يُنشر شيء من هذا المستودع.**
+  ببريدك فقط) + الخادم يتحقق من توقيع Access في كل طلب + حصة تشغيل (429 عند التجاوز)؛ `scripts/cloudflare_setup.py --dry-run` يعرض
+  كل ما سيُنفَّذ بلا اتصال. التوكن يُقرأ من متغير بيئة في طرفيتك (أو من سرّ GitHub محمي في `cloudflare-provision.yml`) ولا يُخزَّن.
+  **ما تحتاجه أنت ولا توفّره Cloudflare:** نطاق مضاف إلى Cloudflare + جهاز يعمل دائمًا للـ chat والنموذج (أو مسار Workers AI بلا GPU —
+  «عند مزوّد استضافة» لا «على خادمك»). **لم يُنشر شيء من هذا المستودع.** وأي توكن لُصق في محادثة يجب عمل *Roll* له فورًا.
 - **بدون متصفح (سطر أوامر):** `python3 -m godotai run "اعمل لعبة Flappy Bird للموبايل" --workspace ./flappy`
   — نفس الوكيل تمامًا، والموافقة على الخطة تكون سؤالًا في الطرفية.
 - **لو ناقص شيء:** الصفحة نفسها تكتب لك بالعربي ما الناقص بالضبط (خادم النموذج؟ المحرك؟) والأمر الذي تنفّذه، و
@@ -118,6 +120,7 @@ python3 -m godotai chat
 | `godotai/prompts/` | System prompt (strict scope + engineering standards) and planning-phase prompt |
 | `godotai/chat/` | **The place to talk to the AI**: `python3 -m godotai chat` → browser page (Arabic-first, quick game prompts, identity card, model-server status) + JSON/SSE API over the *same* agent, plan gate and engine verification as `run` |
 | `godotai/chat/access.py` | Cloudflare Access JWT verification (JWKS, RS256, iss/aud/exp) for the public-website mode; `/healthz` is the only unauthenticated route |
+| `godotai/chat/quota.py` | Run quota for shared/public servers: concurrency cap for the whole server + rolling-24 h cap per visitor (Access e-mail); `429` + `Retry-After` before any model work; the cost/abuse brake behind the login |
 | `deploy/cloudflare/` + `scripts/cloudflare_setup.py` | Optional public website: Access app → Tunnel → ingress → DNS via the Cloudflare API (dry-run available), compose file with your model server (vLLM base / vLLM + LoRA / Ollama) and `cloudflared`; no port published, no credential stored |
 | `godotai/apiref.py` + `tools/apiref_tools.py` | **ClassDB index generated from the pinned binary** (`--doctool`): `api_lookup`, `api_search`, `api_lint`; advisory lint in every verification |
 | `godotai/evals.py` + `evals/tasks/` | Engine-verified task bank (6 tasks incl. a Godot-3 migration trap and an out-of-scope refusal); scored by the engine + structural checks, never by a model; `eval compare` puts two models side by side on common tasks |
@@ -129,6 +132,7 @@ python3 -m godotai chat
 | `engine/checksums/4.7.2-stable/SHA512-SUMS.txt` | Official checksums; every engine download is verified against them |
 | `docker/Dockerfile` | Linux execution environment: Godot 4.7.2 headless + export templates + OpenJDK 17 + Android SDK |
 | `.github/workflows/ci.yml` | Unit tests, byte-compile, secret scan, Cloudflare setup dry-run, JS syntax check, training dry-run, Kaggle self-check, then real-engine API index + template verification + baseline eval on every PR |
+| `.github/workflows/cloudflare-provision.yml` | Manual (`workflow_dispatch`) provisioning of the Access app / tunnel / DNS from a protected GitHub environment secret — dry run by default, tunnel token never stored, identifiers only in the job summary; deploys nothing |
 | `.github/workflows/build-android.yml` | Reusable APK build workflow; the agent copies it into every game repo it creates |
 | `tests/` | 290+ offline unit tests + real-engine integration tests (auto-skipped without the binary); `tests/ui/jsdom_smoke.mjs` drives the chat page's real JavaScript in a DOM against the real server with the scripted model (needs `jsdom`, see its header) |
 | `docs/` | [MODEL](docs/MODEL.md) · [ARCHITECTURE](docs/ARCHITECTURE.md) · [USAGE](docs/USAGE.md) · [RESEARCH](docs/RESEARCH.md) |
@@ -204,9 +208,14 @@ python3 scripts/cloudflare_setup.py --hostname games.example.com --team-domain m
 docker compose -f deploy/cloudflare/compose.yml --profile gpu-base up -d               # chat + cloudflared + your vLLM server
 ```
 
-Only the e-mail addresses you list can pass Cloudflare's login page; the chat re-validates the Access JWT on every request
-and publishes no port. See [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md). Nothing has been deployed by this
-repository.
+Only the e-mail addresses you list can pass Cloudflare's login page; the chat re-validates the Access JWT on every request,
+publishes no port and applies a run quota (1 run at a time, 40 per visitor per day by default → `429`). The setup script
+checks the token read-only first, reuses an existing Access app / tunnel / CNAME on a second run, and can also be run
+from the manual GitHub Actions workflow `cloudflare-provision.yml` (environment-protected secret, tunnel token never
+stored). Prerequisites that Cloudflare does **not** provide: a domain on Cloudflare and an always-on machine of yours for
+the chat + model (or the Workers AI route for a machine without a GPU — labelled *managed*, not your own server). A
+Quick Tunnel (`*.trycloudflare.com`) is for testing only. See [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md).
+Nothing has been deployed by this repository.
 
 ## Talking to the AI (chat UI)
 
@@ -225,7 +234,10 @@ export) — you still press send.
 
 Safety defaults: loopback only (any other `--host` requires `--token`/`GODOTAI_CHAT_TOKEN` or `--access-team-domain` +
 `--access-aud`), `Host`/`Origin` checks, strict CSP with no inline script, file viewer restricted to the project directory
-and never to secret files, and the status endpoint reports only whether a key is *set* — never its value.
+and never to secret files, and the status endpoint reports only whether a key is *set* — never its value. Optional run
+quota for shared/public servers: `--max-concurrent-runs N` / `--max-runs-per-day N` (env `GODOTAI_MAX_CONCURRENT_RUNS` /
+`GODOTAI_MAX_RUNS_PER_DAY`) — the server answers `429` + `Retry-After` before any model work starts; approving a plan,
+cancelling and verifying do not count.
 
 ## GitHub integration
 
@@ -281,6 +293,13 @@ Verified on 2026-09-26 in a Linux sandbox with the official `Godot_v4.7.2-stable
   401 without a token, `/healthz` open); `cloudflare_setup.py` dry-run and a fake Cloudflare transport (call order,
   bodies, `.env` mode 0600, token never printed, failure paths); compose/env hygiene (no `ports:`, `TUNNEL_TOKEN`
   from the environment only, no credential or account id in the tree).
+- ✅ Deployment hardening (PR #5): run quota (`godotai/chat/quota.py` — concurrency + rolling 24 h per identity,
+  fake-clock rollover, 429 + `Retry-After`, reservation rollback, bounded identity table, CLI/env wiring — 13 tests) and
+  the HTTP server behind it; `cloudflare_setup.py` token pre-check, idempotent lookups/reuse/CNAME update,
+  `--discard-tunnel-token` / `--facts-json` CI mode, UUID validation before any call (33 offline tests); the manual
+  `cloudflare-provision.yml` workflow is structurally tested (manual-only, environment-gated, no artifact, no token echo,
+  no input interpolation) and its shell/Python steps were executed locally against synthetic facts; the `CF_WORKERS_AI_TOKEN`
+  split so the setup token never reaches a container. All 320+ tests pass; secret scan clean.
 
 Not yet verified (implemented, but no evidence of success — treat as untested):
 
@@ -289,8 +308,10 @@ Not yet verified (implemented, but no evidence of success — treat as untested)
   `Qwen2.5-Coder-7B-Instruct` can drive this tool loop well enough is **unmeasured**; a larger open-weight model or
   your fine-tuned adapter may be needed (`docs/MODEL.md` §4).
 - ❌ **No public website is deployed.** `scripts/cloudflare_setup.py` has never been run live; no Cloudflare API request
-  was made; the compose stack was never started (no Docker/GPU in the development sandbox); `cloudflared` +
-  Access end-to-end (login page → JWT → chat) is untested. No credential from the user was used anywhere.
+  was made (the lookup query parameters `domain` / `name` / `is_deleted` / `type` follow the API reference but have not
+  been exercised against the real API); the `cloudflare-provision.yml` workflow has never been dispatched; the compose
+  stack was never started (no Docker/GPU in the development sandbox); `cloudflared` + Access end-to-end (login page →
+  JWT → chat) is untested. No credential from the user was used anywhere — the token pasted into the chat must be rolled.
 - ❌ `eval compare` has no real data yet: no eval task has been run against any model, so there is **no evidence** about
   the private model's quality relative to Claude Fable 5.1 or anything else.
 - ❌ QLoRA training itself (`training/train_qlora.py` without `--dry-run`) — written against the TRL v1.14 /

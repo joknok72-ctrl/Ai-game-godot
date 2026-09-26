@@ -29,8 +29,11 @@ jobs:
         run: python3 scripts/secret_scan.py .
       - name: Chat page JavaScript parses (no build step, no inline script)
         run: node --check godotai/chat/static/app.js
-      - name: Chat UI server smoke test (binds an ephemeral loopback port, prints readiness, exits; no model call)
-        run: GODOTAI_SKIP_MODEL_PROBE=1 python3 -m godotai chat --port 0 --games-dir /tmp/ci-games --check
+      - name: Chat UI server smoke test (binds an ephemeral loopback port, prints readiness + run quota, exits; no model call)
+        run: |
+          GODOTAI_SKIP_MODEL_PROBE=1 python3 -m godotai chat --port 0 --games-dir /tmp/ci-games --check \
+              --max-concurrent-runs 1 --max-runs-per-day 40 | tee /tmp/chat-check.txt
+          grep -F "run quota: max 1 concurrent run(s), 40 run(s) per visitor per 24 h" /tmp/chat-check.txt
       - name: Chat page JavaScript drives the real server in a DOM (jsdom, scripted model, loopback only — zero JS errors required)
         run: |
           mkdir -p /tmp/ui-deps && (cd /tmp/ui-deps && npm init -y > /dev/null && npm install --no-audit --no-fund jsdom@24)
@@ -47,13 +50,15 @@ jobs:
             echo "expected exit 1 without common results"; exit 1
           fi
           grep -F "NO EVIDENCE" /tmp/compare.txt
-      - name: Cloudflare website setup — dry-run only (prints the 4 API calls; no token, no network; synthetic ids)
+      - name: Cloudflare website setup — dry-run only (prints the 4 API calls + read-only checks; no token, no network; synthetic ids)
         run: |
           python3 scripts/cloudflare_setup.py --dry-run --hostname games.example.com --team-domain myteam \
             --emails you@example.com --account-id 0123456789abcdef0123456789abcdef \
             --zone-id fedcba9876543210fedcba9876543210 | tee /tmp/cf-dry-run.txt
           grep -F "DRY RUN" /tmp/cf-dry-run.txt
           grep -F "http_status:404" /tmp/cf-dry-run.txt
+          grep -F "/user/tokens/verify" /tmp/cf-dry-run.txt
+          grep -F "cfd_tunnel?name=godotai-chat" /tmp/cf-dry-run.txt
       - name: Training pipeline dry-run on a synthetic verified trajectory (no ML deps)
         run: |
           python3 - <<'EOF'

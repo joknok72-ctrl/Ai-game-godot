@@ -282,7 +282,12 @@ def cmd_chat(args: argparse.Namespace) -> int:
     """Browser chat UI on top of the same agent as `run` (see godotai/chat/)."""
     from .chat import ChatServer, ChatServerError, environment_status
     from .chat.access import ENV_AUD, ENV_TEAM_DOMAIN, AccessError, AccessVerifier
+    from .chat import quota as quota_mod
     cfg = _cfg(args)
+    try:
+        quota = quota_mod.from_env(max_concurrent=args.max_concurrent_runs, per_day=args.max_runs_per_day)
+    except ValueError as exc:
+        sys.exit(f"run quota: {exc}")
     token = args.token or os.environ.get("GODOTAI_CHAT_TOKEN") or None
     team = args.access_team_domain or os.environ.get(ENV_TEAM_DOMAIN) or ""
     aud = args.access_aud or os.environ.get(ENV_AUD) or ""
@@ -301,7 +306,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
         server = ChatServer(cfg, Path(args.games_dir), host=args.host, port=args.port, token=token,
                             auto_approve_default=args.yes or not cfg.agent.require_plan_approval,
                             include_github=not args.no_github, quiet=not args.verbose,
-                            access=access, public_hosts=public_hosts)
+                            access=access, public_hosts=public_hosts, quota=quota)
     except ChatServerError as exc:
         sys.exit(str(exc))
     except OSError as exc:
@@ -322,6 +327,12 @@ def cmd_chat(args: argparse.Namespace) -> int:
     if access is not None:
         d = access.describe()
         print(f"  🔐 Cloudflare Access required on every request — team {d['team_domain']}, aud {d['aud']}")
+    if quota is not None:
+        print(f"  ⏱ run quota: max {quota.max_concurrent or '∞'} concurrent run(s), "
+              f"{quota.per_day or '∞'} run(s) per visitor per 24 h (429 + Retry-After beyond that)")
+    elif not is_loopback_host(args.host):
+        print("  ⚠ no run quota — set --max-concurrent-runs / --max-runs-per-day (GODOTAI_MAX_CONCURRENT_RUNS / "
+              "GODOTAI_MAX_RUNS_PER_DAY) on a public site to cap model cost and abuse")
     print()
     print(f"{'✅' if st['engine']['ok'] else '❌'} Godot {cfg.engine.tag}: "
           + (f"{st['engine']['version']} at {st['engine']['binary']}" if st['engine']['ok'] else
@@ -425,6 +436,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="Cloudflare Zero Trust team domain (<team> or <team>.cloudflareaccess.com; env GODOTAI_ACCESS_TEAM_DOMAIN)")
     s.add_argument("--access-aud", metavar="AUD",
                    help="Cloudflare Access application audience (AUD) tag to require on every request (env GODOTAI_ACCESS_AUD)")
+    s.add_argument("--max-concurrent-runs", type=int, metavar="N",
+                   help="agent runs allowed in flight at once on this server; 0 = unlimited (env GODOTAI_MAX_CONCURRENT_RUNS)")
+    s.add_argument("--max-runs-per-day", type=int, metavar="N",
+                   help="runs one visitor (Access e-mail) may start per rolling 24 h; 0 = unlimited (env GODOTAI_MAX_RUNS_PER_DAY)")
     s.add_argument("--yes", action="store_true", help="tick 'auto-approve the plan' by default in the page")
     s.add_argument("--no-github", action="store_true", help="do not expose GitHub tools to the model")
     s.add_argument("--open", action="store_true", help="open the page in the default browser")

@@ -78,6 +78,7 @@ Options:
 | `--token SECRET` (or `GODOTAI_CHAT_TOKEN`) | Shared secret for non-loopback binds (Docker/LAN). Required on every `/api/*` request as `Authorization: Bearer …` (the page does this after you paste it or open `…/#token=…`). |
 | `--public-host HOST` (or `GODOTAI_PUBLIC_HOST`) | Hostname the page is reached at through Cloudflare Tunnel / a reverse proxy (repeatable); accepted in the `Host` check. |
 | `--access-team-domain TEAM` + `--access-aud AUD` (or `GODOTAI_ACCESS_TEAM_DOMAIN` / `GODOTAI_ACCESS_AUD`) | Require a valid **Cloudflare Access** JWT (`Cf-Access-Jwt-Assertion` header or `CF_Authorization` cookie) on the page, the assets and the API; verified locally against the team's JWKS (RS256, issuer, audience, expiry). The alternative to `--token` for a public website. |
+| `--max-concurrent-runs N` / `--max-runs-per-day N` (or `GODOTAI_MAX_CONCURRENT_RUNS` / `GODOTAI_MAX_RUNS_PER_DAY`) | Run quota for shared/public servers: at most N agent runs in flight on the whole server, and N runs per visitor (Access e-mail, else the token holder, else `local`) per rolling 24 h; `0` = unlimited (the loopback default). Beyond the limit `POST …/messages` answers **429** with `Retry-After` and a bilingual hint before any model work starts; approve / cancel / verify / files are not counted. The compose file sets 1 / 40. |
 | `--yes` | Tick *auto-approve the plan* by default in the page (same meaning as `run --yes`). |
 | `--no-github` | Do not expose the GitHub tools to the model. |
 | `--open` | Open the page in your default browser. |
@@ -114,9 +115,14 @@ unset CLOUDFLARE_API_TOKEN
 docker compose -f deploy/cloudflare/compose.yml --profile gpu-base up -d      # or --profile gpu-lora / --profile cpu
 ```
 
-The script creates the Access application (e-mail allow-list) *first*, then the tunnel, its ingress
+The script verifies the token read-only first (`GET /user/tokens/verify`), looks up an existing Access application /
+tunnel / CNAME with the same hostname or name and reuses them (a second run converges; `--no-reuse-existing` forbids it),
+then creates what is missing: the Access application (e-mail allow-list) *first*, then the tunnel, its ingress
 (`games.example.com → http://chat:8765`, protected with Access, `http_status:404` catch-all) and the proxied CNAME;
-it writes the tunnel token only to the `.env` (mode 0600) and never prints it. The compose file publishes no port —
+it writes the tunnel token only to the `.env` (mode 0600) and never prints it. `--discard-tunnel-token` +
+`--facts-json PATH` is the CI mode used by the manual `cloudflare-provision.yml` workflow (no copy of the connector token
+is kept; take it from Networking → Tunnels on the server). Prerequisites Cloudflare does not provide: a domain on
+Cloudflare and an always-on machine for the chat and the model. The compose file publishes no port —
 `cloudflared` dials out — and starts the chat with `--public-host/--access-*` so every request is re-verified. Details,
 verification steps and what is *not* tested live: `deploy/cloudflare/README.md`.
 
@@ -221,7 +227,7 @@ GODOTAI_ROUTE=cf_gateway GODOTAI_PROVIDER=anthropic GODOTAI_MODEL=claude-fable-5
     GODOTAI_SERVING=vendor GODOTAI_BASE_MODEL=claude-fable-5-1 python3 -m godotai run "..." --workspace ./g
 
 # Cloudflare-hosted open-weight model (Workers AI, OpenAI-compatible endpoint) — open weights, managed hosting:
-export CLOUDFLARE_API_TOKEN=...              # scoped token with Workers AI permission only
+export CF_WORKERS_AI_TOKEN=...               # a SEPARATE token with only the Workers AI Read permission (never the Tunnel/DNS setup token)
 GODOTAI_ROUTE=workers_ai GODOTAI_PROVIDER=openai_compat GODOTAI_MODEL=<workers-ai model id> GODOTAI_SERVING=managed \
     GODOTAI_BASE_MODEL=<workers-ai model id> python3 -m godotai eval run --task template-baseline --workspace /tmp/eval
 ```
@@ -283,6 +289,8 @@ Release APK (GitHub Actions): add repository secrets `ANDROID_KEYSTORE_BASE64` (
 | `[agent] uses Claude (Anthropic), a third-party vendor model, but [model].kind = … would present it as your own model` (config error) | You chose a vendor model: declare it (`GODOTAI_MODEL_KIND=vendor_api GODOTAI_SERVING=vendor GODOTAI_BASE_MODEL=<id>`) — or return to the private default. |
 | `eval compare` prints `NO EVIDENCE` | Neither model has engine-scored results on a common task yet: run `eval run --task <id>` for both, then compare. |
 | `CF_ACCOUNT_ID is not set (needed for this route)` | `route = cf_gateway`/`workers_ai` needs the variables listed above; use `route = direct` otherwise. |
+| Chat page: **429** `server busy` / `daily quota reached` (with `Retry-After`) | The run quota (`--max-concurrent-runs` / `--max-runs-per-day`, compose defaults 1 / 40) said no: wait for the running build to finish (or cancel it), or raise the limits in `deploy/cloudflare/.env`. `/api/status` shows `quota.running` and `quota.used_today`. |
+| `CF_WORKERS_AI_TOKEN is not set` | `route = workers_ai` needs a Cloudflare token with the Workers AI Read permission in `CF_WORKERS_AI_TOKEN` (legacy name `CLOUDFLARE_API_TOKEN` still works, but keep the setup token out of containers). |
 | `secret-scan: N finding(s)` in CI | A token-shaped string was committed. Rotate it, remove it, or mark a deliberate placeholder line with `secret-scan:allow`. |
 | Chat: `cannot listen on 127.0.0.1:8765` | Another process has the port: `python3 -m godotai chat --port 8766` (the page URL changes accordingly). |
 | Chat: `refusing to listen on '0.0.0.0' without a token or Cloudflare Access` | Non-loopback binds need `--token <secret>` / `GODOTAI_CHAT_TOKEN` (Docker, LAN) or `--access-team-domain` + `--access-aud` (website). |

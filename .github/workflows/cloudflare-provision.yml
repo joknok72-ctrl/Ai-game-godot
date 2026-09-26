@@ -1,0 +1,123 @@
+# Manual, one-shot provisioning of the public website's Cloudflare objects (Access application → Tunnel → ingress →
+# DNS) from GitHub Actions, so the Cloudflare API token never has to sit on a laptop: it lives only in a protected
+# GitHub *environment* secret and is used by scripts/cloudflare_setup.py (stdlib Python, offline-tested).
+#
+# What this does NOT do: it does not deploy or run anything. The chat, cloudflared and your model server still run
+# on YOUR always-on machine with deploy/cloudflare/compose.yml. Nothing here runs on push or pull_request.
+#
+# One-time setup (GitHub → repository Settings) — do this BEFORE the first run, otherwise GitHub creates the
+# environment without protection rules:
+#   1. Environments → New environment → name it exactly  cloudflare
+#      → Required reviewers: yourself   → Deployment branches and tags: "Selected" → main only
+#   2. In that environment add the secrets (never repository-wide, never in code):
+#        CLOUDFLARE_API_TOKEN   a NEW token (My Profile → API Tokens → Create Token → Custom) with exactly
+#                               Account → Access: Apps and Policies: Edit, Account → Cloudflare Tunnel: Edit,
+#                               Zone → DNS: Edit (the one zone) — short TTL. Any token that was ever pasted into a
+#                               chat/issue/screenshot must be rolled or deleted first (SECURITY.md).
+#        CF_ACCOUNT_ID          identifier (dashboard sidebar). Kept as a secret so the public run log masks it.
+#        CF_ZONE_ID             identifier (dashboard → your domain → Overview → API).
+#        GODOTAI_ACCESS_EMAILS  comma-separated e-mails allowed through Cloudflare Access (personal data → secret).
+#   3. Actions → "Cloudflare: provision website" → Run workflow → hostname + team; leave "dry run" ticked the first
+#      time (prints the plan, needs no token), untick it to create the objects.
+#
+# The tunnel *connector token* is never kept by the runner (--discard-tunnel-token): a public repository's logs and
+# artifacts are public. Finish on the server: dashboard → Networking → Tunnels → godotai-chat → Configure → copy the
+# token into deploy/cloudflare/.env as TUNNEL_TOKEN, add the AUD tag / hostname / team from the job summary, then
+# `docker compose -f deploy/cloudflare/compose.yml --profile <gpu-base|gpu-lora|cpu> up -d`.
+# Job-summary values (hostname, team, AUD tag, tunnel id, app id) are identifiers, not credentials.
+#
+# Inputs reach the shell through env: only (never ${{ inputs.* }} inside run:) — see tests/test_infra_sync.py.
+name: "Cloudflare: provision website"
+
+on:
+  workflow_dispatch:
+    inputs:
+      hostname:
+        description: "Public hostname inside your Cloudflare zone, e.g. games.example.com"
+        required: true
+        type: string
+      team_domain:
+        description: "Zero Trust team name (the <team> in <team>.cloudflareaccess.com)"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run: only print the API calls that would be made (no token needed, nothing is created)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-provision
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    environment: cloudflare
+    timeout-minutes: 10
+    env:
+      GODOTAI_PUBLIC_HOST: ${{ inputs.hostname }}
+      GODOTAI_ACCESS_TEAM_DOMAIN: ${{ inputs.team_domain }}
+      GODOTAI_ACCESS_EMAILS: ${{ secrets.GODOTAI_ACCESS_EMAILS }}
+      CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Mask the allowed e-mail addresses in this public log (the script prints them one by one)
+        run: |
+          set -euo pipefail
+          if [ -z "${GODOTAI_ACCESS_EMAILS}" ]; then
+            echo "::error::environment secret GODOTAI_ACCESS_EMAILS is empty (comma-separated allowed e-mails)"; exit 1
+          fi
+          IFS=',' read -ra ADDRS <<< "${GODOTAI_ACCESS_EMAILS}"
+          for a in "${ADDRS[@]}"; do
+            a="$(printf '%s' "$a" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+            if [ -n "$a" ]; then echo "::add-mask::$a"; fi
+          done
+
+      - name: Offline tests of the setup script (fake transport — never touches Cloudflare)
+        run: python3 -m unittest discover -s tests -p "test_cloudflare_setup.py"
+
+      - name: Plan — dry run (no token, no network; ids come from the masked secrets)
+        run: python3 scripts/cloudflare_setup.py --dry-run
+
+      - name: Provision (live) — read-only token check, idempotent lookups, then Access app → tunnel → ingress → DNS
+        if: ${{ !inputs.dry_run }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            echo "::error::environment secret CLOUDFLARE_API_TOKEN is missing (create a NEW least-privilege token; see the header of this file)"
+            exit 1
+          fi
+          python3 scripts/cloudflare_setup.py --discard-tunnel-token --facts-json "$RUNNER_TEMP/facts.json"
+
+      - name: Job summary — identifiers only (no token of any kind is ever written here)
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/facts.json" >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json, sys
+          facts = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert "TUNNEL_TOKEN" not in facts, "facts.json must never contain the tunnel token"
+          facts.pop("CF_ACCOUNT_ID", None)          # you know it; it would be masked anyway
+          print("## Cloudflare objects for the godotai website\n")
+          print("| key | value |\n| --- | --- |")
+          for k in ("GODOTAI_PUBLIC_HOST", "GODOTAI_ACCESS_TEAM_DOMAIN", "GODOTAI_ACCESS_AUD", "TUNNEL_ID", "ACCESS_APP_ID",
+                    "DNS_RECORD_ID", "REUSED"):
+              if facts.get(k):
+                  print(f"| `{k}` | `{facts[k]}` |")
+          print("\nThese are identifiers, not credentials. **Nothing is running yet.** On your always-on server:\n")
+          print("1. dashboard → Networking → Tunnels → `godotai-chat` → Configure → copy the connector token;")
+          print("2. put it in `deploy/cloudflare/.env` as `TUNNEL_TOKEN=…` (mode 0600) with the three `GODOTAI_*` values above and your model settings (see `deploy/cloudflare/env.example`);")
+          print("3. `docker compose -f deploy/cloudflare/compose.yml --profile <gpu-base|gpu-lora|cpu> up -d`;")
+          print(f"4. open `https://{facts.get('GODOTAI_PUBLIC_HOST', '<hostname>')}/` — Cloudflare Access asks for your e-mail PIN.\n")
+          print("Then delete or roll the setup token — it is not needed at run time.")
+          EOF

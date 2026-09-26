@@ -23,7 +23,9 @@ the ``Host`` header must be local (or one of ``--public-host``) when bound to lo
 (DNS-rebinding guard) and a foreign ``Origin`` on a state-changing request is rejected
 (CSRF guard); the page is served with a strict Content-Security-Policy and no inline
 script. Session ids are folder-safe slugs, file reads go through the same
-``safe_path``/secret-name filters as the model's tools.
+``safe_path``/secret-name filters as the model's tools. An optional :class:`RunQuota`
+(``--max-concurrent-runs`` / ``--max-runs-per-day``) answers **429 + Retry-After** before a
+message could start one agent run too many (``quota.py``).
 """
 from __future__ import annotations
 
@@ -41,6 +43,7 @@ from typing import Any
 from .. import __version__
 from ..config import Config
 from .access import AccessError, AccessVerifier
+from .quota import RunQuota, identity_of
 from .session import SessionError, SessionManager
 from .status import Probe, environment_status, model_ready
 
@@ -89,7 +92,7 @@ class ChatServer:
                  token: str | None = None, manager: SessionManager | None = None,
                  auto_approve_default: bool = False, include_github: bool = True, quiet: bool = True,
                  access: AccessVerifier | None = None, public_hosts: tuple[str, ...] | list[str] = (),
-                 probe: Probe | None = None):
+                 probe: Probe | None = None, quota: RunQuota | None = None):
         if not is_loopback(host) and not token and access is None:
             raise ChatServerError(
                 f"refusing to listen on {host!r} without a token or Cloudflare Access: the chat can write files and "
@@ -105,6 +108,7 @@ class ChatServer:
             hosts.append(h)
         self.public_hosts: tuple[str, ...] = tuple(dict.fromkeys(hosts))
         self.access = access
+        self.quota = quota                          # None = no brake (local default); see quota.py
         self.probe = probe                          # model-server probe (tests inject one; None = real GET /models)
         self.cfg = cfg
         self.host = host
@@ -176,7 +180,8 @@ class ChatServer:
         st.update(version=__version__, auto_approve_default=self.auto_approve_default,
                   games_dir=str(self.manager.games_dir), token_required=bool(self.token),
                   access_required=self.access is not None, public_hosts=list(self.public_hosts),
-                  hosting=self.hosting, access=self.access.describe() if self.access else None, url=self.url)
+                  hosting=self.hosting, access=self.access.describe() if self.access else None, url=self.url,
+                  quota=(dict(self.quota.describe(), running=self.manager.running_count()) if self.quota else None))
         return st
 
 
@@ -197,18 +202,20 @@ class _Handler(BaseHTTPRequestHandler):
             line = re.sub(r"([?&]token=)[^&\s]*", r"\1[REDACTED]", self.requestline)
             self.log_message('"%s" %s %s', line, str(code), str(size))
 
-    def _send_json(self, status: int, payload: Any) -> None:
+    def _send_json(self, status: int, payload: Any, extra_headers: dict[str, str] | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        for k, v in (extra_headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, status: int, message: str, hint: str = "") -> None:
-        self._send_json(status, {"error": message, "hint": hint})
+    def _error(self, status: int, message: str, hint: str = "", extra_headers: dict[str, str] | None = None) -> None:
+        self._send_json(status, {"error": message, "hint": hint}, extra_headers)
 
     def _send_static(self, name: str, ctype: str) -> None:
         path = STATIC_DIR / name
@@ -262,6 +269,10 @@ class _Handler(BaseHTTPRequestHandler):
             is_loopback(self.app.host) and is_loopback(_host_of(parsed.netloc)) and is_loopback(_host_of(host_hdr))
             and _port(parsed.netloc) == _port(host_hdr))
 
+    def _identity(self) -> str:
+        """Quota key for this request: Access e-mail/subject, else the shared-token holder, else the local user."""
+        return identity_of(self.viewer, bool(self.app.token))
+
     # ---------------------------------------------------------------- routing
     def do_GET(self) -> None:  # noqa: N802 (http.server naming)
         self._dispatch("GET")
@@ -296,7 +307,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._error(HTTPStatus.FORBIDDEN, "cross-origin request rejected")
             return self._api(method, path, query)
         except SessionError as exc:
-            return self._error(exc.status, str(exc), exc.hint)
+            retry = getattr(exc, "retry_after", None)
+            return self._error(exc.status, str(exc), exc.hint, {"Retry-After": str(retry)} if retry else None)
         except (BrokenPipeError, ConnectionResetError):
             return None
         except Exception as exc:  # keep the server alive; report the failure to the page
@@ -308,6 +320,8 @@ class _Handler(BaseHTTPRequestHandler):
             st = self.app.status()
             if self.viewer:
                 st["viewer"] = {"email": self.viewer.get("email"), "sub": self.viewer.get("sub")}
+            if self.app.quota is not None and st.get("quota") is not None:
+                st["quota"]["used_today"] = self.app.quota.used_today(self._identity())
             return self._send_json(HTTPStatus.OK, st)
         if path == "/api/sessions":
             if method == "GET":
@@ -341,9 +355,17 @@ class _Handler(BaseHTTPRequestHandler):
         body = self._read_json()
         if action == "messages":
             auto = body.get("auto_approve")
-            ev = session.send(str(body.get("text", "")),
-                              auto_approve=self.app.auto_approve_default if auto is None else bool(auto),
-                              plan_only=bool(body.get("plan_only", False)))
+            quota, identity, stamp = self.app.quota, self._identity(), None
+            if quota is not None:                                   # 429 + Retry-After before any model work starts
+                stamp = quota.reserve(identity, mgr.running_count())
+            try:
+                ev = session.send(str(body.get("text", "")),
+                                  auto_approve=self.app.auto_approve_default if auto is None else bool(auto),
+                                  plan_only=bool(body.get("plan_only", False)))
+            except BaseException:                                   # SessionError (busy) or anything unexpected
+                if quota is not None and stamp is not None:
+                    quota.release(identity, stamp)                  # nothing started → give the slot back
+                raise
             return self._send_json(HTTPStatus.ACCEPTED, {"accepted": True, "event": ev, "state": session.state})
         if action == "approve":
             if "approved" not in body:
