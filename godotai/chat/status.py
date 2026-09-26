@@ -208,11 +208,22 @@ def environment_status(cfg: Config, probe: Probe | None = None) -> dict[str, Any
             engine.update(ok=True, binary=str(binary), version=g.version(), templates_installed=g.templates_installed())
         except (GodotNotFound, GodotVersionMismatch) as exc:
             engine["error"] = str(exc)
+    from ..hostenv import describe_host, platform_mismatch, termux_native_hint
+    host = describe_host()
+    mismatch = platform_mismatch(eng, host.engine_platform)
     if not engine["ok"]:
-        engine["hint_ar"] = ("محرك Godot " + eng.tag + " غير مثبّت أو إصداره مختلف. شغّل مرة واحدة:\n"
-                             "python3 -m godotai install-godot\nثم أضِف ~/.local/bin إلى PATH وأعد تشغيل الخادم.")
-        engine["hint_en"] = (f"Godot {eng.tag} is not installed (or another version was found). Run once:\n"
-                             "python3 -m godotai install-godot\nthen add ~/.local/bin to PATH and restart the server.")
+        if host.termux_native:                    # the phone itself: the glibc editor cannot run here, say what does
+            engine["hint_ar"] = termux_native_hint("ar")
+            engine["hint_en"] = termux_native_hint("en")
+        else:
+            plat = f"GODOTAI_ENGINE_PLATFORM={host.engine_platform} " if mismatch else ""
+            engine["hint_ar"] = ("محرك Godot " + eng.tag + " غير مثبّت أو إصداره مختلف. شغّل مرة واحدة:\n"
+                                 f"{plat}python3 -m godotai install-godot\nثم أضِف ~/.local/bin إلى PATH وأعد تشغيل الخادم."
+                                 + (f"\n(هذا الجهاز {host.machine}: الإصدار المضبوط {eng.platform} لا يعمل عليه — "
+                                    f"استخدم {host.engine_platform})" if mismatch else ""))
+            engine["hint_en"] = (f"Godot {eng.tag} is not installed (or another version was found). Run once:\n"
+                                 f"{plat}python3 -m godotai install-godot\nthen add ~/.local/bin to PATH and restart the server."
+                                 + (f"\n({mismatch})" if mismatch else ""))
 
     from .. import apiref
     idx = apiref.load_index(eng)
@@ -259,6 +270,8 @@ def environment_status(cfg: Config, probe: Probe | None = None) -> dict[str, Any
                                        and sdk and Path(sdk).is_dir())}
     return {
         "engine": engine,
+        # where the server runs: CPU/asset match, Termux (Bionic) or a proot guest — detection only (godotai/hostenv.py)
+        "host": {**host.to_dict(), "platform_mismatch": mismatch, "engine_platform_configured": eng.platform},
         "api_index": api_index,
         "model": model,
         "github_token_set": _set("GITHUB_TOKEN"),

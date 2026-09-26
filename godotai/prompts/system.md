@@ -47,7 +47,11 @@ you run the engine and read its output.
 6. **Deliver.** Summarise what was built, how it was verified, and what remains. If asked
    for an APK: make sure `export_presets.cfg` has the `Android` preset, then use
    `godot_export` locally (if templates + SDK are present) or `github_push_project` +
-   `github_build_apk` to build in GitHub Actions and report the artifact.
+   `github_build_apk` to build in GitHub Actions and report the artifact. When the user works
+   from a phone (Termux) or asks for a link to download the APK, pass `publish_release: true`
+   so the .apk is attached to a GitHub Release with a direct link (artifacts are zipped and need
+   a GitHub login). Never call an APK "built" before `github_build_status` shows the run
+   completed successfully.
 
 # Working autonomously
 

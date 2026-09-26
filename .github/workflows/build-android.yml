@@ -3,10 +3,21 @@
 # Self-contained on purpose: the godotai agent copies this file into every game
 # repository it creates (github_push_project) and triggers it (github_build_apk),
 # so the game repo does not need the agent package. The env block is kept in sync
-# with godot.toml by tests/test_workflow_sync.py.
+# with godot.toml by tests/test_infra_sync.py.
 #
 # Requirements follow the official 4.7 "Exporting for Android" docs:
 # OpenJDK 17, Build-Tools 35.0.1, Platform 35 (Gradle path also needs NDK r28b + CMake).
+#
+# Where the APK ends up (docs/TERMUX.md §3 — the phone-only workflow):
+#   * always: the run's artifact `android-apk-<build_type>` (a zip; downloading it needs a GitHub login);
+#   * with publish_release=true: a GitHub Release `apk-<build_type>-<run number>` whose asset is the bare .apk, so a
+#     phone browser can fetch https://github.com/<owner>/<repo>/releases/latest/download/game-debug.apk directly
+#     (public repo: no login; private repo: logged-in browser). Only the `release` job has `contents: write`.
+#
+# Signing: a debug build uses the secret ANDROID_DEBUG_KEYSTORE_BASE64 when present (so every build carries the SAME
+# key and Android accepts it as an update over the previous install); without it a fresh debug key is generated per run
+# and the old APK must be uninstalled before installing the new one. Release builds need ANDROID_KEYSTORE_BASE64 /
+# ANDROID_KEYSTORE_USER / ANDROID_KEYSTORE_PASSWORD. Secrets reach the shell as environment variables only.
 name: Build Android APK
 
 on:
@@ -26,6 +37,19 @@ on:
         description: "Export preset name from export_presets.cfg"
         required: false
         default: Android
+      publish_release:
+        description: "Also attach the APK to a GitHub Release (direct download link for a phone)"
+        required: false
+        default: false
+        type: boolean
+      verify:
+        description: "Run the engine checks first (import, --check-only on every .gd, smoke test) and fail the build on errors"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
 
 env:
   GODOT_VERSION: "4.7.2"
@@ -78,14 +102,25 @@ jobs:
           godot --headless --version
 
       - name: Configure editor settings for Android export
+        # A persistent debug keystore (optional secret, base64 of a keytool-generated .keystore with alias
+        # androiddebugkey / password android) keeps the signature identical across builds so the phone can UPDATE the
+        # installed game instead of refusing a "package conflicts with an existing package" install.
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.config/godot" "$HOME/.android"
           godot --headless --editor --quit || true
           MINOR="$(echo "$GODOT_VERSION" | cut -d. -f1,2)"
-          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android \
-            -keystore "$HOME/.android/debug.keystore" -storepass android \
-            -dname "CN=Android Debug,O=Android,C=US" -validity 9999
+          if [ -n "${DEBUG_KEYSTORE_BASE64}" ]; then
+            printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 -d > "$HOME/.android/debug.keystore"
+            echo "using the persistent debug keystore from the repository secret"
+          else
+            keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android \
+              -keystore "$HOME/.android/debug.keystore" -storepass android \
+              -dname "CN=Android Debug,O=Android,C=US" -validity 9999
+            echo "::notice::fresh debug keystore generated for this run — uninstall the previous debug APK before installing this one, or add the ANDROID_DEBUG_KEYSTORE_BASE64 secret"
+          fi
           cat > "$HOME/.config/godot/editor_settings-${MINOR}.tres" <<EOF
           [gd_resource type="EditorSettings" format=3]
 
@@ -98,6 +133,74 @@ jobs:
           export/android/force_system_user = false
           export/android/shutdown_adb_on_exit = true
           EOF
+
+      - name: Verify with the engine before export (import · --check-only · smoke test)
+        # The same checks as `python3 -m godotai verify` (godotai/verify.py) in plain shell, so a game repo needs no
+        # agent package. For a phone-only user (docs/TERMUX.md §3) this is the real engine verdict: a script that does
+        # not parse or a smoke test that fails stops the build here, with file/line in the log and a table in the job
+        # summary, instead of shipping a broken APK. Skip with verify=false. tests/test_termux.py runs this exact block
+        # against the template with the pinned engine (positive and negative).
+        if: ${{ inputs.verify }}
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ inputs.project_dir }}
+          VERIFY_FRAMES: "120"
+        run: |
+          set -uo pipefail
+          cd "${PROJECT_DIR}"
+          test -f project.godot
+          SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          fail=0
+          {
+            echo "## Engine verification (Godot ${GODOT_VERSION}-${GODOT_RELEASE})"
+            echo
+            echo "| step | result |"
+            echo "|---|---|"
+          } >> "$SUMMARY"
+          note() { echo "| $1 | $2 |" >> "$SUMMARY"; echo "verify: $1 -> $2"; }
+
+          # 1. import: every resource imports (the editor opens headless, imports, quits)
+          if godot --headless --path . --import > /tmp/verify-import.log 2>&1; then
+            note "import (--import)" "✅ all resources imported"
+          else
+            fail=1; note "import (--import)" "❌ failed (see log)"
+            echo "::error::godot --import failed"; tail -n 40 /tmp/verify-import.log
+          fi
+
+          # 2. every GDScript file parses (engine static analysis), hidden dirs and addons/ skipped like verify.py
+          n=0; bad=0
+          while IFS= read -r -d '' f; do
+            rel="${f#./}"; n=$((n + 1))
+            if out="$(godot --headless --path . --script "res://${rel}" --check-only 2>&1)" \
+               && ! grep -q "SCRIPT ERROR" <<< "$out"; then
+              continue
+            fi
+            bad=$((bad + 1)); fail=1
+            echo "::error file=${PROJECT_DIR}/${rel}::GDScript check failed: res://${rel}"
+            grep -E "SCRIPT ERROR|Parse Error|at: |[Ll]ine [0-9]+" <<< "$out" | head -n 20 || printf '%s\n' "$out" | tail -n 20
+          done < <(find . -name '*.gd' -not -path '*/.*' -not -path './addons/*' -print0 | sort -z)
+          if [ "$bad" = 0 ]; then note "GDScript parse (--check-only)" "✅ ${n}/${n} scripts parse cleanly"
+          else note "GDScript parse (--check-only)" "❌ ${bad}/${n} scripts failed (file/line in the log)"; fi
+
+          # 3. smoke test (tests/smoke_test.gd must print SMOKE_TEST_OK) or a headless run without script errors
+          if [ -f tests/smoke_test.gd ]; then
+            if out="$(timeout 300 godot --headless --path . --script res://tests/smoke_test.gd 2>&1)" \
+               && grep -q "SMOKE_TEST_OK" <<< "$out"; then
+              note "smoke test (tests/smoke_test.gd)" "✅ SMOKE_TEST_OK"
+            else
+              fail=1; note "smoke test (tests/smoke_test.gd)" "❌ failed (see log)"
+              echo "::error::smoke test failed"; grep -E "SMOKE_TEST|SCRIPT ERROR|ERROR|at: " <<< "$out" | head -n 30 || true
+            fi
+          else
+            if out="$(timeout 180 godot --headless --path . --quit-after "${VERIFY_FRAMES}" 2>&1)" \
+               && ! grep -q "SCRIPT ERROR" <<< "$out"; then
+              note "headless run (${VERIFY_FRAMES} frames)" "✅ ran without script errors"
+            else
+              fail=1; note "headless run (${VERIFY_FRAMES} frames)" "❌ failed (see log)"
+              echo "::error::headless run failed"; grep -E "SCRIPT ERROR|ERROR|at: " <<< "$out" | head -n 30 || true
+            fi
+          fi
+          exit "$fail"
 
       - name: Prepare release keystore (only for release builds)
         if: ${{ inputs.build_type == 'release' }}
@@ -142,3 +245,42 @@ jobs:
           path: ${{ inputs.project_dir }}/build/android/*.apk
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    # Opt-in (publish_release=true): the only job allowed to write to the repository — it creates the release
+    # `apk-<build_type>-<run number>` on the built commit and attaches the .apk from the artifact above. The `latest`
+    # release link then always points at the newest build (releases are never marked pre-release for that reason).
+    needs: apk
+    if: ${{ inputs.publish_release }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-apk-${{ inputs.build_type }}
+          path: apk
+
+      - name: Create the GitHub Release with the APK attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_TYPE: ${{ inputs.build_type }}
+          PROJECT_DIR: ${{ inputs.project_dir }}
+          PRESET: ${{ inputs.preset }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          ls -la apk
+          TAG="apk-${BUILD_TYPE}-${RUN_NUMBER}"
+          NOTES="Godot ${GODOT_VERSION}-${GODOT_RELEASE} · ${BUILD_TYPE} · preset ${PRESET} · project ${PROJECT_DIR} · commit ${GITHUB_SHA} · run ${RUN_URL}"
+          if [ "${BUILD_TYPE}" = "debug" ]; then
+            NOTES="${NOTES}"$'\n'"Debug-signed: install by allowing your browser/file manager to install unknown apps. Not for the Play Store."
+          fi
+          # --latest: GitHub otherwise orders "latest" by the tagged COMMIT's date (REST docs, "Get the latest release"),
+          # so a rebuild of the same commit would not necessarily become releases/latest — say it explicitly.
+          gh release create "$TAG" apk/*.apk --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
+            --title "APK ${BUILD_TYPE} #${RUN_NUMBER}" --notes "$NOTES"
+          echo "APK attached to ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Latest-build link: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/latest/download/game-${BUILD_TYPE}.apk" >> "$GITHUB_STEP_SUMMARY"

@@ -62,6 +62,13 @@ python3 -m godotai chat
   **Oracle Cloud Always Free** (ARM، 2 OCPU / 12 GB، ببطاقة للتحقق). **لا شيء منشور من هذا المستودع** ولا يمكن نشر موقع دائم
   بدون حسابك ومفتاحك وتوكن دخول (`GODOTAI_CHAT_TOKEN`) — [`deploy/paas/README.md`](deploy/paas/README.md) يشرح الخطوات.
   لا حصة مجانية تعني «مجاني للأبد»، ولا أحد هنا يزعم أن Qwen المجاني أقوى من Claude Fable 5.1 Max — الحكم فقط لـ `eval compare`.
+- **من الهاتف (Termux) بـ API مجاني، والـ APK يُبنى على GitHub:** اقرأ [`docs/TERMUX.md`](docs/TERMUX.md) — الأوامر كاملة بالعربي.
+  الخلاصة: المحادثة والتخطيط وأدوات GitHub تعمل في Termux مباشرةً (`pkg install python git` ثم `python3 -m godotai chat`)، لكن
+  **محرك Godot الرسمي لا يعمل داخل Termux نفسه** (glibc مقابل Bionic) — إمّا Debian عبر `proot-distro` على نفس الهاتف
+  (`scripts/termux_setup.sh --proot`) وإمّا يترك التحقق والتصدير لـ GitHub Actions: الوكيل يرفع اللعبة ويشغّل `build-android.yml`
+  الذي **يتحقق بالمحرك أولًا** ثم يصدّر الـ APK وينشره كـ Release برابط مباشر (`publish_release`). `doctor` والصفحة يكشفان Termux
+  ويقولان ذلك. الحصة المجانية (50 طلبًا/يوم عند OpenRouter بلا رصيد) تكفي تشغيلة قصيرة في اليوم؛ **لم يُجرَّب على هاتف فعلي**
+  (التفاصيل في الدليل §7).
 - **بدون متصفح (سطر أوامر):** `python3 -m godotai run "اعمل لعبة Flappy Bird للموبايل" --workspace ./flappy`
   — نفس الوكيل تمامًا، والموافقة على الخطة تكون سؤالًا في الطرفية.
 - **لو ناقص شيء:** الصفحة نفسها تكتب لك بالعربي ما الناقص بالضبط (خادم النموذج؟ المحرك؟) والأمر الذي تنفّذه، و
@@ -143,9 +150,10 @@ python3 -m godotai chat
 | `docker/Dockerfile` | Linux execution environment: Godot 4.7.2 headless + export templates + OpenJDK 17 + Android SDK |
 | `.github/workflows/ci.yml` | Unit tests, byte-compile, secret scan, Cloudflare setup dry-run, JS syntax check, training dry-run, Kaggle self-check, then real-engine API index + template verification + baseline eval on every PR |
 | `.github/workflows/cloudflare-provision.yml` | Manual (`workflow_dispatch`) provisioning of the Access app / tunnel / DNS from a protected GitHub environment secret — dry run by default, tunnel token never stored, identifiers only in the job summary; deploys nothing |
-| `.github/workflows/build-android.yml` | Reusable APK build workflow; the agent copies it into every game repo it creates |
-| `tests/` | 360+ offline unit tests + real-engine integration tests (auto-skipped without the binary); `tests/ui/jsdom_smoke.mjs` drives the chat page's real JavaScript in a DOM against the real server with the scripted model (needs `jsdom`, see its header) |
-| `docs/` | [MODEL](docs/MODEL.md) · [ARCHITECTURE](docs/ARCHITECTURE.md) · [USAGE](docs/USAGE.md) · [RESEARCH](docs/RESEARCH.md) · [FREE_TIER](docs/FREE_TIER.md) |
+| `.github/workflows/build-android.yml` | Reusable APK build workflow; the agent copies it into every game repo it creates. Verifies the project with the engine first (`verify`, default on), optionally publishes the `.apk` as a GitHub Release with a direct link (`publish_release`), optional persistent debug keystore secret |
+| `docs/TERMUX.md` + `scripts/termux_setup.sh` + `godotai/hostenv.py` | **Phone path**: run the agent from Termux on Android with a free hosted Qwen preset, engine inside a `proot-distro` Debian guest or on GitHub Actions; host/CPU/Termux detection feeding `doctor`, `/api/status` and the installer (refuses a binary that cannot run here) |
+| `tests/` | 400+ offline unit tests + real-engine integration tests (auto-skipped without the binary); `tests/ui/jsdom_smoke.mjs` drives the chat page's real JavaScript in a DOM against the real server with the scripted model (needs `jsdom`, see its header) |
+| `docs/` | [MODEL](docs/MODEL.md) · [ARCHITECTURE](docs/ARCHITECTURE.md) · [USAGE](docs/USAGE.md) · [RESEARCH](docs/RESEARCH.md) · [FREE_TIER](docs/FREE_TIER.md) · [TERMUX](docs/TERMUX.md) |
 
 ## Quick start (Linux)
 

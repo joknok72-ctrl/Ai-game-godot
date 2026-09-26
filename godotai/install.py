@@ -84,6 +84,12 @@ def _verify(path: Path, sums: dict[str, str], log=print) -> None:
 def install_godot(cfg: Config, bin_dir: Path | None = None, system: bool = False,
                   templates: bool = True, force: bool = False, log=print) -> Path:
     eng = cfg.engine
+    # Refuse before any download when the binary could not run here: directly in Termux (Bionic, no glibc) or an
+    # asset for another CPU (x86_64 editor on an aarch64 phone / Oracle A1). GODOTAI_INSTALL_ANYWAY=1 overrides.
+    from .hostenv import install_blocker
+    blocker = install_blocker(eng)
+    if blocker:
+        raise InstallError(blocker)
     bin_dir = bin_dir or (Path("/usr/local/bin") if system else Path.home() / ".local" / "bin")
     bin_dir.mkdir(parents=True, exist_ok=True)
     target = bin_dir / "godot"
