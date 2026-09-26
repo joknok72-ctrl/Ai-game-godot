@@ -16,11 +16,14 @@ Routes (all JSON unless noted):
     GET  /api/sessions/<id>/events?since=N   text/event-stream (id/event/data), resumes from N or Last-Event-ID
 
 Safety: binds 127.0.0.1 by default; any other host *requires* a token (``--token`` /
-``GODOTAI_CHAT_TOKEN``) sent as ``Authorization: Bearer`` (or ``?token=`` for EventSource);
-the ``Host`` header must be local when bound to loopback (DNS-rebinding guard) and a
-foreign ``Origin`` on a state-changing request is rejected (CSRF guard); the page is served
-with a strict Content-Security-Policy and no inline script. Session ids are folder-safe
-slugs, file reads go through the same ``safe_path``/secret-name filters as the model's tools.
+``GODOTAI_CHAT_TOKEN``) sent as ``Authorization: Bearer`` (or ``?token=`` for EventSource)
+**or** Cloudflare Access verification (``--access-team-domain`` + ``--access-aud``, see
+``access.py``: every request — page, assets and API — must carry a valid Access JWT);
+the ``Host`` header must be local (or one of ``--public-host``) when bound to loopback
+(DNS-rebinding guard) and a foreign ``Origin`` on a state-changing request is rejected
+(CSRF guard); the page is served with a strict Content-Security-Policy and no inline
+script. Session ids are folder-safe slugs, file reads go through the same
+``safe_path``/secret-name filters as the model's tools.
 """
 from __future__ import annotations
 
@@ -37,13 +40,15 @@ from typing import Any
 
 from .. import __version__
 from ..config import Config
+from .access import AccessError, AccessVerifier
 from .session import SessionError, SessionManager
-from .status import environment_status
+from .status import Probe, environment_status, model_ready
 
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_FILES = {"/static/app.js": ("app.js", "application/javascript; charset=utf-8"),
                 "/static/app.css": ("app.css", "text/css; charset=utf-8")}
 MAX_BODY = 1_000_000
+HEALTH_PATH = "/healthz"          # liveness probe for containers/cloudflared; answers {"ok": true} without any auth
 SSE_KEEPALIVE_SECONDS = 15.0
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; "
        "font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
@@ -71,20 +76,44 @@ def _host_of(header: str) -> str:
     return h.rsplit(":", 1)[0] if h.count(":") == 1 else h
 
 
+_HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$")
+
+
+def valid_public_host(host: str) -> bool:
+    """A public hostname such as ``games.example.com`` (lower-case, dotted, no scheme/port/path)."""
+    return bool(_HOSTNAME_RE.match((host or "").strip().lower()))
+
+
 class ChatServer:
     def __init__(self, cfg: Config, games_dir: Path, host: str = "127.0.0.1", port: int = 8765,
                  token: str | None = None, manager: SessionManager | None = None,
-                 auto_approve_default: bool = False, include_github: bool = True, quiet: bool = True):
-        if not is_loopback(host) and not token:
+                 auto_approve_default: bool = False, include_github: bool = True, quiet: bool = True,
+                 access: AccessVerifier | None = None, public_hosts: tuple[str, ...] | list[str] = (),
+                 probe: Probe | None = None):
+        if not is_loopback(host) and not token and access is None:
             raise ChatServerError(
-                f"refusing to listen on {host!r} without a token: the chat can write files and spend API credit. "
-                "Pass --token <secret> (or set GODOTAI_CHAT_TOKEN), or keep the default 127.0.0.1.")
+                f"refusing to listen on {host!r} without a token or Cloudflare Access: the chat can write files and "
+                "run your model. Pass --token <secret> (or set GODOTAI_CHAT_TOKEN), configure --access-team-domain + "
+                "--access-aud (GODOTAI_ACCESS_TEAM_DOMAIN / GODOTAI_ACCESS_AUD), or keep the default 127.0.0.1.")
+        hosts: list[str] = []
+        for h in public_hosts:
+            h = (h or "").strip().lower()
+            if not h:
+                continue
+            if not valid_public_host(h):
+                raise ChatServerError(f"--public-host {h!r} is not a hostname like games.example.com")
+            hosts.append(h)
+        self.public_hosts: tuple[str, ...] = tuple(dict.fromkeys(hosts))
+        self.access = access
+        self.probe = probe                          # model-server probe (tests inject one; None = real GET /models)
         self.cfg = cfg
         self.host = host
         self.token = token or None
         self.auto_approve_default = auto_approve_default
         self.quiet = quiet
-        self.manager = manager or SessionManager(cfg, games_dir, include_github=include_github)
+        self.manager = manager or SessionManager(
+            cfg, games_dir, include_github=include_github,
+            ready_check=(lambda: model_ready(cfg, probe)) if probe is not None else None)
         self.stopping = threading.Event()
         self._serving = threading.Event()          # set while serve_forever() runs (httpd.shutdown() needs it)
         self._serve_thread: threading.Thread | None = None
@@ -128,15 +157,26 @@ class ChatServer:
         return t
 
     def allowed_host(self, host_header: str) -> bool:
+        h = _host_of(host_header or "").lower()
+        if h in self.public_hosts:
+            return True                                    # reached through the tunnel / reverse proxy
         if not is_loopback(self.host):
-            return True                                    # token-protected; hostnames vary behind Docker/LAN
-        h = _host_of(host_header or "")
+            return True                                    # token/Access-protected; hostnames vary behind Docker/LAN
         return is_loopback(h) or h == self.host
 
+    @property
+    def hosting(self) -> str:
+        """``access`` (Cloudflare Access in front), ``token`` (shared secret) or ``local`` (loopback only)."""
+        if self.access is not None:
+            return "access"
+        return "token" if self.token else "local"
+
     def status(self) -> dict[str, Any]:
-        st = environment_status(self.cfg)
+        st = environment_status(self.cfg, self.probe)
         st.update(version=__version__, auto_approve_default=self.auto_approve_default,
-                  games_dir=str(self.manager.games_dir), token_required=bool(self.token), url=self.url)
+                  games_dir=str(self.manager.games_dir), token_required=bool(self.token),
+                  access_required=self.access is not None, public_hosts=list(self.public_hosts),
+                  hosting=self.hosting, access=self.access.describe() if self.access else None, url=self.url)
         return st
 
 
@@ -144,6 +184,7 @@ class _Handler(BaseHTTPRequestHandler):
     app: ChatServer
     server_version = "godotai-chat"
     sys_version = ""
+    viewer: dict[str, Any] | None = None     # Access claims of the current request (email/sub), when Access is on
 
     # ---------------------------------------------------------------- plumbing
     def log_message(self, fmt: str, *args: Any) -> None:  # quiet by default; errors still surface as responses
@@ -232,6 +273,14 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if not self.app.allowed_host(self.headers.get("Host", "")):
                 return self._error(HTTPStatus.FORBIDDEN, "unexpected Host header (open the URL printed by the server)")
+            if method == "GET" and urllib.parse.urlsplit(self.path).path == HEALTH_PATH:
+                return self._send_json(HTTPStatus.OK, {"ok": True})   # container health probe: no auth, no facts
+            if self.app.access is not None:                # page, assets and API alike: no valid Access JWT → 401
+                try:
+                    self.viewer = self.app.access.authenticate(self.headers)
+                except AccessError as exc:
+                    return self._error(HTTPStatus.UNAUTHORIZED, f"Cloudflare Access: {exc}",
+                                       "افتح الموقع من رابطه العام (عبر Cloudflare Access) وسجّل الدخول ببريدك المصرّح به.")
             url = urllib.parse.urlsplit(self.path)
             path, query = url.path, urllib.parse.parse_qs(url.query)
             if method == "GET" and path in ("/", "/index.html"):
@@ -256,7 +305,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _api(self, method: str, path: str, query: dict[str, list[str]]) -> None:
         mgr = self.app.manager
         if path == "/api/status" and method == "GET":
-            return self._send_json(HTTPStatus.OK, self.app.status())
+            st = self.app.status()
+            if self.viewer:
+                st["viewer"] = {"email": self.viewer.get("email"), "sub": self.viewer.get("sub")}
+            return self._send_json(HTTPStatus.OK, st)
         if path == "/api/sessions":
             if method == "GET":
                 return self._send_json(HTTPStatus.OK, {"sessions": mgr.list(), "games_dir": str(mgr.games_dir)})

@@ -7,9 +7,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from _helpers import REPO, repo_config
+from _helpers import PRIVATE_ENV, REPO, repo_config, vendor_config, vendor_identity
 
 from godotai.config import (
+    OPENAI_VENDOR_URL,
+    PRIVATE_BASE_URL,
     AgentConfig,
     ConfigError,
     EngineConfig,
@@ -77,12 +79,75 @@ class EnginePinTests(unittest.TestCase):
 
 class AgentConfigTests(unittest.TestCase):
     def test_repo_agent_settings(self):
-        cfg = repo_config()
-        self.assertEqual(cfg.agent.provider, "anthropic")
-        self.assertEqual(cfg.agent.model, "claude-fable-5-1")
+        """The shipped default is *your* model on *your* server — no vendor API in the runtime path."""
+        with mock.patch.dict(os.environ, PRIVATE_ENV):
+            cfg = repo_config()
+            self.assertEqual(cfg.agent.provider, "openai_compat")
+            self.assertEqual(cfg.agent.model, "godotai")
+            self.assertEqual(cfg.agent.route, "direct")
+            self.assertEqual(cfg.agent.endpoint, PRIVATE_BASE_URL)
+            self.assertTrue(cfg.agent.private_endpoint)
         self.assertEqual(cfg.agent.effort, "max")
         self.assertGreaterEqual(cfg.agent.max_tokens, 32000, "high/xhigh/max effort needs a large max_tokens")
         self.assertTrue(cfg.agent.require_plan_approval)
+        # and the identity block says plainly what the weights are
+        self.assertEqual(cfg.model.kind, "open_weight_deployment")
+        self.assertEqual(cfg.model.base_model, "Qwen/Qwen2.5-Coder-7B-Instruct")
+        self.assertEqual(cfg.model.base_license, "Apache-2.0")
+        self.assertTrue(cfg.model.yours)
+        self.assertFalse(cfg.model.trained_by_you, "no adapter has been trained yet — must not claim otherwise")
+        self.assertIsNone(cfg.model.describe()["quality_claim"])
+
+    def test_endpoint_precedence(self):
+        a = AgentConfig()
+        with mock.patch.dict(os.environ, PRIVATE_ENV):
+            self.assertEqual(a.endpoint, PRIVATE_BASE_URL, "nothing set → your private server")
+            self.assertTrue(a.private_endpoint)
+        with mock.patch.dict(os.environ, {**PRIVATE_ENV, "OPENAI_API_KEY": "sk-test"}):
+            self.assertEqual(a.endpoint, OPENAI_VENDOR_URL, "a vendor key alone is an explicit choice of the vendor")
+            self.assertFalse(a.private_endpoint)
+        with mock.patch.dict(os.environ, {**PRIVATE_ENV, "OPENAI_API_KEY": "sk-test", "OPENAI_BASE_URL": "http://gpu-box:8000/v1"}):
+            self.assertEqual(a.endpoint, "http://gpu-box:8000/v1", "OPENAI_BASE_URL beats the key-derived vendor URL")
+            self.assertTrue(a.private_endpoint)
+        with mock.patch.dict(os.environ, {**PRIVATE_ENV, "OPENAI_BASE_URL": "http://gpu-box:8000/v1"}):
+            self.assertEqual(AgentConfig(base_url="http://explicit:1/v1").endpoint, "http://explicit:1/v1")
+        self.assertIsNone(AgentConfig(provider="anthropic").endpoint, "Anthropic has its own default URL")
+        self.assertIsNone(AgentConfig(route="workers_ai").endpoint, "Cloudflare routes derive the URL in make_provider")
+
+    def test_vendor_model_must_be_declared_as_such(self):
+        """A vendor API can be used — but never labelled as your own model (and the reverse)."""
+        from dataclasses import replace
+        cfg = repo_config()
+        with self.assertRaises(ConfigError) as cm:
+            replace(cfg, agent=replace(cfg.agent, provider="anthropic", model="claude-fable-5-1"))
+        self.assertIn("vendor_api", str(cm.exception))
+        ok = vendor_config()
+        self.assertEqual(ok.agent.provider, "anthropic")
+        self.assertEqual(ok.model.kind, "vendor_api")
+        self.assertFalse(ok.model.yours)
+        with mock.patch.dict(os.environ, {**PRIVATE_ENV, "OPENAI_API_KEY": "sk-test"}):
+            with self.assertRaises(ConfigError):
+                replace(cfg, agent=replace(cfg.agent, model="gpt-x"))       # api.openai.com via the key → vendor
+        with self.assertRaises(ConfigError):
+            replace(cfg, agent=replace(cfg.agent, route="cf_gateway", model="openai/gpt-x"))
+        replace(cfg, agent=replace(cfg.agent, route="cf_gateway", model="workers-ai/@cf/qwen/qwen2.5-coder-32b-instruct"))
+        replace(cfg, agent=replace(cfg.agent, route="workers_ai", model="@cf/qwen/qwen2.5-coder-32b-instruct"),
+                model=replace(cfg.model, serving="managed"))
+        with self.assertRaises(ConfigError):
+            replace(cfg, agent=replace(cfg.agent, base_url="http://127.0.0.1:8000/v1"), model=vendor_identity("x"))
+
+    def test_model_env_overrides(self):
+        env = {**PRIVATE_ENV, "GODOTAI_MODEL_KIND": "fine_tune", "GODOTAI_ADAPTER": "training/out/godotai-lora",
+               "GODOTAI_MODEL_NAME": "godotai-ft"}
+        with mock.patch.dict(os.environ, env):
+            cfg = load_config(REPO / "godot.toml")
+        self.assertEqual(cfg.model.kind, "fine_tune")
+        self.assertEqual(cfg.model.adapter, "training/out/godotai-lora")
+        self.assertTrue(cfg.model.trained_by_you)
+        self.assertIn("godotai-ft", cfg.model.disclosure("en"))
+        with mock.patch.dict(os.environ, {**PRIVATE_ENV, "GODOTAI_MODEL_KIND": "fine_tune"}):
+            with self.assertRaises(ConfigError):
+                load_config(REPO / "godot.toml")      # fine_tune without an adapter is a claim without weights
 
     def test_invalid_agent_values(self):
         with self.assertRaises(ConfigError):

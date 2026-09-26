@@ -72,13 +72,24 @@
     $("games-dir").textContent = st.games_dir || "";
     const chips = $("chips"); chips.innerHTML = "";
     chips.appendChild(chip(st.engine.ok ? `Godot ${st.engine.version || st.engine.pinned}` : `Godot ${st.engine.pinned} غير مثبّت`, st.engine.ok ? "ok" : "bad", st.engine.binary || st.engine.error || ""));
-    chips.appendChild(chip(`${st.model.provider}/${st.model.model} · effort=${st.model.effort}`, st.model.ready ? "ok" : "bad", st.model.ready ? "مفتاح النموذج موجود" : "مفتاح النموذج مفقود"));
+    const m = st.model, id = m.identity || {};
+    const modelLabel = m.private ? `نموذجك «${id.name || m.model}» · ${m.ready ? "الخادم يعمل" : "الخادم غير متاح"}`
+                                 : `${m.provider}/${m.model} · effort=${m.effort}`;
+    const modelTitle = m.private ? (m.base_url || "") + (m.server && m.server.models && m.server.models.length ? " · يقدّم: " + m.server.models.slice(0, 5).join(", ") : "")
+                                 : (m.ready ? "مفتاح النموذج موجود" : "مفتاح النموذج مفقود");
+    chips.appendChild(chip(modelLabel, m.ready ? "ok" : "bad", modelTitle));
+    if (m.private && m.server && m.server.model_listed === false) chips.appendChild(chip(`⚠ الاسم «${m.model}» غير موجود في الخادم`, "warn", "المتاح: " + m.server.models.join(", ") + " — اضبط GODOTAI_MODEL أو --served-model-name"));
+    const hosting = st.hosting || (st.token_required ? "token" : "local");
+    chips.appendChild(chip(hosting === "access" ? `🔐 موقع عام محمي بـ Cloudflare Access${st.public_hosts && st.public_hosts.length ? " · " + st.public_hosts[0] : ""}` : hosting === "token" ? "🔑 وصول برمز (token)" : "💻 محلي على جهازك فقط",
+                           hosting === "local" ? "warn" : "ok",
+                           hosting === "access" ? ("كل طلب يُتحقق من توقيع Cloudflare Access" + (st.access ? ` · ${st.access.team_domain}` : "") + (st.viewer && st.viewer.email ? ` · أنت: ${st.viewer.email}` : "")) : hosting === "token" ? "كل طلب يحتاج الرمز الذي طبعه الخادم" : "لا يوجد موقع عام؛ للنشر انظر deploy/cloudflare/"));
     chips.appendChild(chip(st.android.export_possible ? "تصدير APK محلي متاح" : "تصدير APK: غير مهيّأ", st.android.export_possible ? "ok" : "warn", "يحتاج قوالب التصدير + JDK 17 + Android SDK"));
     chips.appendChild(chip(st.github_token_set ? "GitHub متصل" : "GitHub غير متصل", st.github_token_set ? "ok" : "warn", "GITHUB_TOKEN لبناء APK على GitHub Actions"));
+    renderIdentity(st);
 
     const setup = $("setup"); setup.innerHTML = ""; setup.className = "setup hidden";
     const blocks = [];
-    if (!st.model.ready) blocks.push({ cls: "bad", title: "① مفتاح النموذج (إلزامي قبل إرسال أي رسالة)", text: st.model.hint_ar });
+    if (!m.ready) blocks.push({ cls: "bad", title: m.private ? "① خادم نموذجك (إلزامي قبل إرسال أي رسالة)" : "① مفتاح النموذج (إلزامي قبل إرسال أي رسالة)", text: m.hint_ar });
     if (!st.engine.ok) blocks.push({ cls: "warn", title: "② محرك Godot (إلزامي حتى يمرّ التحقق ويُبنى شيء حقيقي)", text: st.engine.hint_ar });
     if (blocks.length) {
       setup.className = "setup " + blocks[0].cls;
@@ -90,7 +101,26 @@
       setup.appendChild(row);
     }
   }
-  async function loadStatus() { try { renderStatus(await api("/api/status")); } catch (e) { toast("تعذر الاتصال بالخادم: " + e.message, true); } }
+  function renderIdentity(st) {
+    const id = (st.model && st.model.identity) || null;
+    const box = $("identity");
+    if (!id) { box.classList.add("hidden"); return; }
+    box.classList.remove("hidden");
+    $("identity-name").textContent = id.name;
+    $("identity-kind").textContent = id.kind_label_ar || id.kind;
+    const yours = $("identity-yours");
+    yours.textContent = id.kind === "vendor_api" ? "ليس نموذجك — مرجع للمقارنة" : (id.yours ? "ملكك: الأوزان والخادم تحت سيطرتك" : "أوزان مفتوحة عند مزوّد استضافة");
+    yours.className = "badge " + (id.kind === "vendor_api" ? "bad" : (id.yours ? "ok" : "warn"));
+    $("identity-text").textContent = id.disclosure_ar || "";
+  }
+  function renderHosting(st) {
+    const note = $("hosting-note");
+    const hosting = st.hosting || (st.token_required ? "token" : "local");
+    if (hosting === "access") note.textContent = `موقع عام${st.public_hosts && st.public_hosts.length ? " على " + st.public_hosts.join(", ") : ""} خلف Cloudflare Tunnel + Access — كل طلب موقَّع ومُتحقَّق منه في الخادم.`;
+    else if (hosting === "token") note.textContent = "الخادم يعمل خلف رمز وصول (token). لا تعرضه على الإنترنت بدون Cloudflare Access أو وكيل مُصادِق.";
+    else note.textContent = "الخادم يعمل على جهازك فقط (لا يوجد موقع عام). للنشر الآمن: deploy/cloudflare/README.md. أوقفه بـ Ctrl+C في الطرفية.";
+  }
+  async function loadStatus() { try { const st = await api("/api/status"); renderStatus(st); renderHosting(st); } catch (e) { toast("تعذر الاتصال بالخادم: " + e.message, true); } }
 
   // ---------------------------------------------------------------- projects
   function renderProjects() {
@@ -272,6 +302,16 @@
     }
   });
   $("message").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("composer").requestSubmit(); } });
+  // quick prompts: fill the box (never auto-send — the user reads, edits, then presses send)
+  for (const b of document.querySelectorAll(".quick-btn")) {
+    b.addEventListener("click", () => {
+      if (!state.current) { toast("اختر مشروعًا أو أنشئ واحدًا أولًا، ثم اضغط الطلب الجاهز.", true); return; }
+      const box = $("message");
+      if (box.disabled) { toast("انتظر انتهاء الطلب الجاري.", true); return; }
+      box.value = b.dataset.prompt || "";
+      box.focus();
+    });
+  }
   $("btn-cancel").addEventListener("click", async () => { try { await api(`/api/sessions/${state.current}/cancel`, { method: "POST", body: {} }); } catch (e) { toast(e.message, true); } });
   $("btn-verify").addEventListener("click", async () => {
     $("btn-verify").disabled = true;

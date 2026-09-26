@@ -2,7 +2,8 @@
 
 The patterns are deliberately conservative (few false positives) and cover the
 credential shapes this project can meet: Anthropic / OpenAI keys, GitHub tokens,
-cloud API tokens assigned in text (``KAGGLE_API_TOKEN=…``, ``CLOUDFLARE_API_TOKEN=…``),
+cloud API tokens assigned in text (``KAGGLE_API_TOKEN=…``, ``CLOUDFLARE_API_TOKEN=…``,
+``TUNNEL_TOKEN=…`` for cloudflared, ``GODOTAI_CHAT_TOKEN=…`` for the chat server),
 ``Authorization: Bearer …`` headers, Android keystore passwords and PEM blocks.
 
 Placeholders are recognised so documentation can show *how* to set a variable
@@ -40,7 +41,8 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # NAME = value  for the variable names this project documents
     "assigned_secret": re.compile(
         r"\b((?:KAGGLE_API_TOKEN|KAGGLE_KEY|CLOUDFLARE_API_TOKEN|CF_API_TOKEN|CF_AIG_TOKEN|ANTHROPIC_API_KEY|"
-        r"OPENAI_API_KEY|GITHUB_TOKEN|HF_TOKEN|GODOT_ANDROID_KEYSTORE_(?:DEBUG|RELEASE)_PASSWORD)"
+        r"OPENAI_API_KEY|GITHUB_TOKEN|HF_TOKEN|GODOT_ANDROID_KEYSTORE_(?:DEBUG|RELEASE)_PASSWORD|"
+        r"TUNNEL_TOKEN|CF_TUNNEL_TOKEN|CLOUDFLARE_TUNNEL_TOKEN|GODOTAI_CHAT_TOKEN)"
         r"\b\s*[:=]\s*[\"']?)([^\s\"'<>${}]{12,})", re.I),
     "generic_secret_assignment": re.compile(
         r"(?i)\b((?:api[_-]?key|api[_-]?token|access[_-]?token|secret[_-]?key|client[_-]?secret|auth[_-]?token)"

@@ -6,7 +6,7 @@ import os
 import unittest
 from unittest import mock
 
-from _helpers import repo_config
+from _helpers import PRIVATE_ENV, anthropic_agent, repo_config
 
 from godotai.providers import ProviderError, ToolCall, make_provider
 from godotai.providers import cloudflare
@@ -152,12 +152,28 @@ class OpenAICompatTests(unittest.TestCase):
 
 class FactoryTests(unittest.TestCase):
     def test_make_provider_from_repo_config(self):
+        """Repo default: your own OpenAI-compatible server on 127.0.0.1:8000 — no vendor, no key needed."""
         cfg = repo_config()
-        p = make_provider(cfg.agent, api_key="k")
+        with mock.patch.dict(os.environ, PRIVATE_ENV):
+            p = make_provider(cfg.agent)
+        self.assertIsInstance(p, OpenAICompatProvider)
+        self.assertEqual(p.model, "godotai")
+        self.assertEqual(p.url, "http://127.0.0.1:8000/v1/chat/completions")
+        self.assertEqual(p.effort, "max")
+        self.assertEqual(p.max_tokens, cfg.agent.max_tokens)
+        with mock.patch.dict(os.environ, {**PRIVATE_ENV, "OPENAI_BASE_URL": "http://gpu-box:8000/v1"}):
+            self.assertEqual(make_provider(cfg.agent).url, "http://gpu-box:8000/v1/chat/completions")
+        with mock.patch.dict(os.environ, {**PRIVATE_ENV, "OPENAI_API_KEY": "sk-test"}):
+            self.assertEqual(make_provider(cfg.agent).url, "https://api.openai.com/v1/chat/completions",
+                             "a vendor key alone is an explicit choice of the vendor endpoint")
+
+    def test_make_provider_anthropic_opt_in(self):
+        a = anthropic_agent()
+        p = make_provider(a, api_key="k")
         self.assertIsInstance(p, AnthropicProvider)
         self.assertEqual(p.model, "claude-fable-5-1")
         self.assertEqual(p.effort, "max")
-        self.assertEqual(p.max_tokens, cfg.agent.max_tokens)
+        self.assertEqual(p.max_tokens, a.max_tokens)
 
     def test_make_provider_openai(self):
         from dataclasses import replace
@@ -281,7 +297,7 @@ class CloudflareRoutingTests(unittest.TestCase):
         from dataclasses import replace
         cfg = repo_config()
         with mock.patch.dict(os.environ, {**self.ENV, "CF_AIG_TOKEN": "gw-secret", "CLOUDFLARE_API_TOKEN": "cf-secret"}):
-            p = make_provider(replace(cfg.agent, route="cf_gateway"), api_key="anthropic-key")
+            p = make_provider(anthropic_agent(route="cf_gateway"), api_key="anthropic-key")
             self.assertIsInstance(p, AnthropicProvider)
             self.assertEqual(p.url, "https://gateway.ai.cloudflare.com/v1/acc123/godotai-gw/anthropic/v1/messages")
             h = p.headers()
@@ -297,35 +313,31 @@ class CloudflareRoutingTests(unittest.TestCase):
             self.assertEqual(w.api_key, "cf-secret")
 
             # an explicit base_url wins over the route-derived one
-            e = make_provider(replace(cfg.agent, route="cf_gateway", base_url="https://proxy.example/x"), api_key="k")
+            e = make_provider(anthropic_agent(route="cf_gateway", base_url="https://proxy.example/x"), api_key="k")
             self.assertEqual(e.url, "https://proxy.example/x/v1/messages")
 
     def test_gateway_stored_key_needs_no_anthropic_key(self):
         """BYOK / unified billing: only cf-aig-authorization is sent (docs example, read 2026-09-26)."""
-        from dataclasses import replace
-        cfg = repo_config()
         with mock.patch.dict(os.environ, {**self.ENV, "CF_AIG_TOKEN": "gw-secret", "ANTHROPIC_API_KEY": ""}):
-            p = make_provider(replace(cfg.agent, route="cf_gateway"))
+            p = make_provider(anthropic_agent(route="cf_gateway"))
             self.assertTrue(p.gateway_stored_key)
             self.assertNotIn("x-api-key", p.headers())
             self.assertEqual(p.headers()["cf-aig-authorization"], "Bearer gw-secret")
             p.transport = FakeTransport({"type": "message", "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn", "usage": {}})
             self.assertEqual(p.complete(SYSTEM, [], TOOLS).text, "hi")
         with mock.patch.dict(os.environ, {**self.ENV, "ANTHROPIC_API_KEY": ""}):
-            q = make_provider(replace(cfg.agent, route="cf_gateway"))   # unauthenticated gateway, no key anywhere
+            q = make_provider(anthropic_agent(route="cf_gateway"))   # unauthenticated gateway, no key anywhere
             self.assertFalse(q.gateway_stored_key)
             with self.assertRaises(ProviderError):
                 q.complete(SYSTEM, [], TOOLS)
 
     def test_factory_passes_beta_flags(self):
-        from dataclasses import replace
-        cfg = repo_config()
-        p = make_provider(replace(cfg.agent, progress_updates=True, task_budget_tokens=30_000, act_effort="high"), api_key="k")
+        p = make_provider(anthropic_agent(progress_updates=True, task_budget_tokens=30_000, act_effort="high"), api_key="k")
         self.assertTrue(p.progress_updates)
         self.assertEqual(p.task_budget_tokens, 30_000)
         self.assertTrue(p.per_message_effort)
         self.assertIn(BETA_PER_MESSAGE_EFFORT, p.betas())
-        q = make_provider(replace(cfg.agent, act_effort="max"), api_key="k")
+        q = make_provider(anthropic_agent(act_effort="max"), api_key="k")
         self.assertFalse(q.per_message_effort, "same effort → no beta header needed")
 
 

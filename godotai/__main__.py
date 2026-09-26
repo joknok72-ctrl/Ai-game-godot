@@ -9,11 +9,14 @@
   python3 -m godotai plan "make a 2D endless runner" --workspace ./my-game
   python3 -m godotai run  "make a 2D endless runner" --workspace ./my-game [--yes]
   python3 -m godotai chat [--port 8765] [--games-dir ./games]   # browser chat UI → http://127.0.0.1:8765
+  python3 -m godotai chat --host 0.0.0.0 --public-host games.example.com \
+                          --access-team-domain <team> --access-aud <aud>   # behind Cloudflare Tunnel + Access (deploy/cloudflare/)
   python3 -m godotai apiref build [--docs-dir godot/doc/classes] [--force]   # ClassDB index from the pinned binary
   python3 -m godotai apiref lookup CharacterBody2D move_and_slide             # exact signature
   python3 -m godotai apiref search "change scene"                              # name search
   python3 -m godotai apiref lint --project ./my-game                           # Godot-3 idioms / unknown classes
   python3 -m godotai eval list | run <task-id> --workspace DIR [--yes] | score --task <id> --project DIR
+  python3 -m godotai eval compare [--candidate godotai] [--reference claude-fable-5-1]   # same tasks, engine-scored: the only "better than"
   python3 -m godotai dataset extract --runs ./my-game/.godotai/runs --out data/train.jsonl
 """
 from __future__ import annotations
@@ -74,10 +77,25 @@ def cmd_doctor(args: argparse.Namespace) -> int:
           + (f"{idx.stats()['classes']} classes at {idx.path}" if idx else
              f"not built yet — built on first api_lookup, or: python3 -m godotai apiref build"))
     print(f"{'✅' if shutil.which('gdlint') else '➖'} gdlint (optional): {shutil.which('gdlint') or 'not installed (pip install gdtoolkit)'}")
-    key_env = "ANTHROPIC_API_KEY" if cfg.agent.provider == "anthropic" else "OPENAI_API_KEY"
-    print(f"{'✅' if os.environ.get(key_env) else '➖'} {key_env}: {'set' if os.environ.get(key_env) else 'not set (needed for plan/run)'}")
+    from .chat.status import model_ready, probe_skipped
+    ready, _ar, hint_en = model_ready(cfg)
+    ident = cfg.model
+    if cfg.agent.private_endpoint:
+        mark = "➖" if probe_skipped() else "✅" if ready else "❌"      # a skipped probe is neither a pass nor a failure
+        print(f"{mark} your model server ({cfg.agent.endpoint}): "
+              + ("not probed (GODOTAI_SKIP_MODEL_PROBE is set)" if probe_skipped() else
+                 "reachable" if ready else "not reachable — " + hint_en.splitlines()[0]))
+    else:
+        key_env = "ANTHROPIC_API_KEY" if cfg.agent.provider == "anthropic" else (
+            "CLOUDFLARE_API_TOKEN" if cfg.agent.route == "workers_ai" else "OPENAI_API_KEY")
+        print(f"{'✅' if ready else '➖'} {key_env}: {'set' if ready else 'not set (needed for plan/run)'}")
     print(f"{'✅' if os.environ.get('GITHUB_TOKEN') else '➖'} GITHUB_TOKEN: {'set' if os.environ.get('GITHUB_TOKEN') else 'not set (needed for GitHub tools)'}")
-    print(f"model: {cfg.agent.provider}/{cfg.agent.model} effort={cfg.agent.effort}")
+    print(f"model: {cfg.agent.provider}/{cfg.agent.model} effort={cfg.agent.effort} endpoint={cfg.agent.endpoint or '(provider default)'}")
+    print(f"identity: {ident.name} — {ident.kind_label('en')}"
+          + (f" (base {ident.base_model}, {ident.base_license})" if ident.base_model else "")
+          + (f", adapter {ident.adapter}" if ident.adapter else "") + f", {ident.serving_label('en')}"
+          + (" — yours" if ident.yours else " — NOT yours" if ident.kind == "vendor_api" else ""))
+    print(f"          {ident.disclosure('en')}")
     return 0 if ok else 1
 
 
@@ -193,6 +211,12 @@ def cmd_eval(args: argparse.Namespace) -> int:
         for t in evals.load_tasks(cfg.root):
             print(f"{t.id:24} {t.title}  [{', '.join(t.tags)}]")
         return 0
+    if args.action == "compare":
+        results_dir = Path(args.results_dir) if args.results_dir else cfg.root / evals.RESULTS_DIRNAME
+        cmp = evals.compare_models(results_dir, candidate=args.candidate or cfg.agent.model,
+                                   reference=args.reference or cfg.model.reference_model)
+        print(cmp.to_markdown())
+        return 0 if cmp.common_tasks else 1
     task = evals.get_task(cfg.root, args.task)
     if task is None:
         sys.exit(f"unknown task {args.task!r}; see: python3 -m godotai eval list")
@@ -257,32 +281,70 @@ def cmd_run(args: argparse.Namespace, plan_only: bool = False) -> int:
 def cmd_chat(args: argparse.Namespace) -> int:
     """Browser chat UI on top of the same agent as `run` (see godotai/chat/)."""
     from .chat import ChatServer, ChatServerError, environment_status
+    from .chat.access import ENV_AUD, ENV_TEAM_DOMAIN, AccessError, AccessVerifier
     cfg = _cfg(args)
     token = args.token or os.environ.get("GODOTAI_CHAT_TOKEN") or None
+    team = args.access_team_domain or os.environ.get(ENV_TEAM_DOMAIN) or ""
+    aud = args.access_aud or os.environ.get(ENV_AUD) or ""
+    access = None
+    if team or aud:
+        if not (team and aud):
+            sys.exit(f"Cloudflare Access needs both the team domain and the AUD tag: --access-team-domain/{ENV_TEAM_DOMAIN} "
+                     f"and --access-aud/{ENV_AUD}")
+        try:
+            access = AccessVerifier(team, aud)
+        except AccessError as exc:
+            sys.exit(f"Cloudflare Access configuration: {exc}")
+    public_hosts = list(args.public_host or [])
+    public_hosts += [h for h in (os.environ.get("GODOTAI_PUBLIC_HOST") or "").split(",") if h.strip()]
     try:
         server = ChatServer(cfg, Path(args.games_dir), host=args.host, port=args.port, token=token,
                             auto_approve_default=args.yes or not cfg.agent.require_plan_approval,
-                            include_github=not args.no_github, quiet=not args.verbose)
+                            include_github=not args.no_github, quiet=not args.verbose,
+                            access=access, public_hosts=public_hosts)
     except ChatServerError as exc:
         sys.exit(str(exc))
     except OSError as exc:
         sys.exit(f"cannot listen on {args.host}:{args.port}: {exc} (try --port <other>)")
     st = environment_status(cfg)
     url = server.url
+    ident = cfg.model
     print(f"godotai chat {__version__} — Godot {cfg.engine.tag} — {cfg.agent.provider}/{cfg.agent.model} effort={cfg.agent.effort}")
+    print(f"model identity: {ident.name} — {ident.kind_label('en')}"
+          + (f" (base {ident.base_model}, {ident.base_license})" if ident.base_model else "") + f", {ident.serving_label('en')}")
     print(f"games directory: {server.manager.games_dir}")
     print(f"\n  افتح هذا العنوان في المتصفح:   {url}")
     print(f"  Open this URL in your browser: {url}")
     if token:
         print("  (token mode: open the URL as …/#token=<your token>, or paste the token when the page asks)")
+    if server.public_hosts:
+        print("  public hostname(s) accepted in Host header: " + ", ".join(server.public_hosts))
+    if access is not None:
+        d = access.describe()
+        print(f"  🔐 Cloudflare Access required on every request — team {d['team_domain']}, aud {d['aud']}")
     print()
     print(f"{'✅' if st['engine']['ok'] else '❌'} Godot {cfg.engine.tag}: "
           + (f"{st['engine']['version']} at {st['engine']['binary']}" if st['engine']['ok'] else
              f"{st['engine']['error']} → python3 -m godotai install-godot"))
-    print(f"{'✅' if st['model']['ready'] else '❌'} model key ({st['model']['key_env']}): "
-          + ("set" if st['model']['ready'] else "not set — the page explains what to export before sending a message"))
+    m = st["model"]
+    if m["private"]:
+        srv = m["server"]
+        if not srv["probed"]:
+            detail = "not probed (GODOTAI_SKIP_MODEL_PROBE is set) — the page checks again before sending"
+        elif m["ready"]:
+            detail = ("reachable" + (f", serves {len(srv['models'])} model(s)" if srv["models"] else "")
+                      + ("" if srv["model_listed"] in (True, None) else
+                         f" — ⚠ '{cfg.agent.model}' is not among them: " + ", ".join(srv["models"][:5])))
+        else:
+            detail = "not reachable — the page explains how to start it (nothing is sent until then)"
+        mark = "➖" if not srv["probed"] else "✅" if m["ready"] else "❌"
+        print(f"{mark} your model server ({m['base_url']}): {detail}")
+    else:
+        print(f"{'✅' if m['ready'] else '❌'} model key ({m['key_env']}): "
+              + ("set" if m['ready'] else "not set — the page explains what to export before sending a message"))
     if not is_loopback_host(args.host):
-        print(f"⚠ listening on {args.host} — token required on every API request (kept out of logs)")
+        print(f"⚠ listening on {args.host} — every request needs "
+              + ("a valid Cloudflare Access token" if access is not None else "the access token") + " (kept out of logs)")
     print("Ctrl+C to stop.")
     if args.open:
         import webbrowser
@@ -356,7 +418,13 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1; anything else needs --token)")
     s.add_argument("--port", type=int, default=8765)
     s.add_argument("--games-dir", default="./games", help="each project is a sub-folder here (default ./games)")
-    s.add_argument("--token", help="access token for every API request (env GODOTAI_CHAT_TOKEN); required off-loopback")
+    s.add_argument("--token", help="access token for every API request (env GODOTAI_CHAT_TOKEN); required off-loopback unless Access is configured")
+    s.add_argument("--public-host", action="append", metavar="HOST",
+                   help="public hostname the page is reached at through Cloudflare Tunnel / a reverse proxy (repeatable; env GODOTAI_PUBLIC_HOST)")
+    s.add_argument("--access-team-domain", metavar="TEAM",
+                   help="Cloudflare Zero Trust team domain (<team> or <team>.cloudflareaccess.com; env GODOTAI_ACCESS_TEAM_DOMAIN)")
+    s.add_argument("--access-aud", metavar="AUD",
+                   help="Cloudflare Access application audience (AUD) tag to require on every request (env GODOTAI_ACCESS_AUD)")
     s.add_argument("--yes", action="store_true", help="tick 'auto-approve the plan' by default in the page")
     s.add_argument("--no-github", action="store_true", help="do not expose GitHub tools to the model")
     s.add_argument("--open", action="store_true", help="open the page in the default browser")
@@ -390,6 +458,10 @@ def main(argv: list[str] | None = None) -> int:
     sc = esub.add_parser("score", help="score an existing project against a task (no LLM)")
     sc.add_argument("--task", required=True)
     sc.add_argument("--project", required=True)
+    cp = esub.add_parser("compare", help="compare two models on the tasks both have engine-scored results for (no LLM)")
+    cp.add_argument("--candidate", help="model id as recorded in evals/results (default: [agent].model)")
+    cp.add_argument("--reference", help="model id to compare against (default: [model].reference_model)")
+    cp.add_argument("--results-dir", help="default: evals/results under the repo root")
     s.set_defaults(fn=cmd_eval)
 
     s = sub.add_parser("dataset", help="extract training examples from engine-verified run logs")

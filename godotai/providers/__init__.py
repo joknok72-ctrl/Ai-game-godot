@@ -8,6 +8,8 @@ def make_provider(agent_cfg: AgentConfig, **overrides) -> Provider:
     kw = dict(model=agent_cfg.model, max_tokens=agent_cfg.max_tokens, effort=agent_cfg.effort,
               strict_tools=agent_cfg.strict_tools, base_url=agent_cfg.base_url)
     extra_headers: dict[str, str] = {}
+    if agent_cfg.provider == "openai_compat" and agent_cfg.route == "direct":
+        kw["base_url"] = agent_cfg.endpoint          # explicit URL → OPENAI_BASE_URL → vendor (key set) → private default
 
     # optional Cloudflare routing — URLs from env var *names*, no values in the repo
     if agent_cfg.route == "cf_gateway":

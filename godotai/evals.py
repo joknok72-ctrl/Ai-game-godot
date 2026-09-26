@@ -207,3 +207,111 @@ def save_result(result: EvalResult, results_dir: Path) -> Path:
     path = results_dir / f"{result.task_id}-{stamp}.json"
     path.write_text(json.dumps(result.to_dict(), indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     return path
+
+
+# ---------------------------------------------------------------------------
+# Comparing models — the only place a "better than" may come from
+# ---------------------------------------------------------------------------
+@dataclass
+class TaskScore:
+    task_id: str
+    attempts: int
+    passes: int
+
+    @property
+    def rate(self) -> float:
+        return self.passes / self.attempts if self.attempts else 0.0
+
+
+@dataclass
+class Comparison:
+    candidate: str
+    reference: str
+    candidate_scores: dict[str, TaskScore] = field(default_factory=dict)
+    reference_scores: dict[str, TaskScore] = field(default_factory=dict)
+    models_seen: list[str] = field(default_factory=list)
+    results_dir: str = ""
+
+    @property
+    def common_tasks(self) -> list[str]:
+        return sorted(set(self.candidate_scores) & set(self.reference_scores))
+
+    def _tally(self) -> tuple[int, int, int]:
+        ahead = behind = tied = 0
+        for t in self.common_tasks:
+            c, r = self.candidate_scores[t].rate, self.reference_scores[t].rate
+            if c > r:
+                ahead += 1
+            elif c < r:
+                behind += 1
+            else:
+                tied += 1
+        return ahead, behind, tied
+
+    def verdict(self) -> str:
+        """One honest sentence. Without common, engine-scored tasks there is *no* verdict at all."""
+        common = self.common_tasks
+        if not common:
+            missing = []
+            if not self.candidate_scores:
+                missing.append(f"no results for candidate {self.candidate!r}")
+            if not self.reference_scores:
+                missing.append(f"no results for reference {self.reference!r}")
+            if not missing:
+                missing.append("the two models were run on different tasks")
+            return ("NO EVIDENCE — " + "; ".join(missing) + ". No claim about which model is better can be made "
+                    "until both have `godotai eval run` results on the same tasks.")
+        ahead, behind, tied = self._tally()
+        c_rate = sum(s.rate for t, s in self.candidate_scores.items() if t in common) / len(common)
+        r_rate = sum(s.rate for t, s in self.reference_scores.items() if t in common) / len(common)
+        head = (f"{self.candidate} vs {self.reference} on {len(common)} common task(s): mean pass rate "
+                f"{c_rate:.0%} vs {r_rate:.0%}; ahead on {ahead}, behind on {behind}, tied on {tied}.")
+        if len(common) < 3:
+            head += " Too few tasks for a general claim — this is evidence about these tasks only."
+        return head
+
+    def to_markdown(self) -> str:
+        lines = [f"# Model comparison — candidate `{self.candidate}` vs reference `{self.reference}`",
+                 f"results: {self.results_dir}  ·  models seen: {', '.join(self.models_seen) or 'none'}", "",
+                 "| task | candidate pass/attempts | reference pass/attempts |", "| --- | --- | --- |"]
+        for t in sorted(set(self.candidate_scores) | set(self.reference_scores)):
+            c = self.candidate_scores.get(t)
+            r = self.reference_scores.get(t)
+            lines.append(f"| {t} | {f'{c.passes}/{c.attempts}' if c else '—'} | {f'{r.passes}/{r.attempts}' if r else '—'} |")
+        lines += ["", "**Verdict:** " + self.verdict(), "",
+                  "_Scored by the pinned Godot engine + the task's structural checks; no model judged another model. "
+                  "Only common tasks count; a model that trains well but fails `godot_verify` is worse, not better._"]
+        return "\n".join(lines)
+
+
+def load_results(results_dir: Path) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    d = Path(results_dir)
+    for p in sorted(d.glob("*.json")) if d.is_dir() else []:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict) and data.get("task_id"):
+            out.append(data)
+    return out
+
+
+def compare_models(results_dir: Path, candidate: str, reference: str) -> Comparison:
+    """Tally engine-scored results per model per task; the result's ``agent.model`` identifies the model."""
+    cmp = Comparison(candidate=candidate, reference=reference, results_dir=str(results_dir))
+    seen: set[str] = set()
+    for r in load_results(results_dir):
+        agent = r.get("agent") or {}
+        model = str(agent.get("model") or "")
+        if not model:
+            continue                                   # score-only results (no model ran) prove nothing about a model
+        seen.add(model)
+        bucket = cmp.candidate_scores if model == candidate else cmp.reference_scores if model == reference else None
+        if bucket is None:
+            continue
+        ts = bucket.setdefault(r["task_id"], TaskScore(r["task_id"], 0, 0))
+        ts.attempts += 1
+        ts.passes += 1 if r.get("passed") else 0
+    cmp.models_seen = sorted(seen)
+    return cmp

@@ -19,6 +19,16 @@
   <div class="chips" id="chips" aria-live="polite"></div>
 </header>
 
+<section id="identity" class="identity" aria-live="polite">
+  <div class="identity-head">
+    <strong id="identity-name">النموذج</strong>
+    <span id="identity-kind" class="badge"></span>
+    <span id="identity-yours" class="badge"></span>
+  </div>
+  <p id="identity-text" class="dim"></p>
+  <p id="identity-claim" class="hint">القوة مقابل النماذج الأخرى لا تُعلَن هنا؛ تُقاس فقط بأمر <code>python3 -m godotai eval compare</code> على نفس المهام وبحُكم المحرك.</p>
+</section>
+
 <section id="setup" class="setup hidden" aria-live="polite"></section>
 
 <main class="layout">
@@ -50,10 +60,24 @@
         <h3>كيف أبدأ؟</h3>
         <ol>
           <li>أنشئ مشروعًا من القائمة الجانبية (أو اختر مشروعًا موجودًا).</li>
-          <li>اكتب فكرة اللعبة في الصندوق بالأسفل. مثال: <em>«اعمل لعبة Flappy Bird للموبايل بالتحكم باللمس، بدون صور خارجية، وصدّر APK»</em>.</li>
+          <li>اكتب فكرة اللعبة في الصندوق بالأسفل، أو اضغط أحد الطلبات الجاهزة فوق الصندوق. مثال: <em>«اعمل لعبة Flappy Bird للموبايل بالتحكم باللمس، بدون صور خارجية، وصدّر APK»</em>.</li>
           <li>الذكاء الاصطناعي يقرأ المشروع ويعرض <strong>خطة</strong>. وافق عليها أو اطلب تعديلًا.</li>
           <li>بعد الموافقة يبني الملفات ويشغّل محرك Godot 4.7.2 للتحقق، ولا يقول «تم» إلا بعد أن يقول المحرك PASS.</li>
         </ol>
+      </div>
+    </div>
+
+    <div class="quick" id="quick" aria-label="طلبات جاهزة">
+      <span class="dim">جرّب طلبًا جاهزًا (يُكتب في الصندوق، وأنت تعدّله ثم تضغط إرسال):</span>
+      <div class="quick-row">
+        <button type="button" class="btn quick-btn" data-prompt="اعمل لعبة Flappy Bird للموبايل بالتحكم باللمس، أشكال بسيطة بدون صور خارجية، مع عدّاد نقاط وشاشة إعادة، وصدّر APK.">🐦 Flappy Bird</button>
+        <button type="button" class="btn quick-btn" data-prompt="اعمل لعبة endless runner ثنائية الأبعاد للموبايل: اللمس للقفز، عوائق عشوائية، سرعة تزداد مع الوقت، وحفظ أعلى نتيجة.">🏃 Endless runner</button>
+        <button type="button" class="btn quick-btn" data-prompt="اعمل لعبة match-3 للموبايل: شبكة 8×8 من قطع ملوّنة تُبدَّل بالسحب، مع نقاط وعدد حركات محدود.">🧩 Match-3</button>
+        <button type="button" class="btn quick-btn" data-prompt="اعمل لعبة منصات (platformer) ثنائية الأبعاد بمستوى واحد: أزرار لمس يسار/يمين/قفز، عملات تُجمع، ونقطة نهاية.">🕹 Platformer</button>
+        <button type="button" class="btn quick-btn" data-prompt="اعمل لعبة top-down shooter بسيطة للموبايل: عصا افتراضية للحركة، إطلاق تلقائي على أعداء يقتربون، موجات، وشريط صحة.">🔫 Top-down shooter</button>
+        <button type="button" class="btn quick-btn" data-prompt="اعمل لعبة 2048 للموبايل بالسحب في الاتجاهات الأربعة، مع حفظ أعلى نتيجة.">🔢 2048</button>
+        <button type="button" class="btn quick-btn" data-prompt="أضف زر إيقاف مؤقت وواجهة HUD تعرض النقاط والصحة، بدون تغيير أسلوب اللعب الحالي.">➕ زر إيقاف + HUD</button>
+        <button type="button" class="btn quick-btn" data-prompt="صدّر APK للأندرويد من هذا المشروع.">📦 صدّر APK</button>
       </div>
     </div>
 
@@ -79,7 +103,7 @@
 </dialog>
 
 <footer class="foot">
-  <span>godotai <span id="version"></span> · الخادم يعمل على جهازك فقط (لا يوجد موقع عام). أوقفه بـ Ctrl+C في الطرفية.</span>
+  <span>godotai <span id="version"></span> · <span id="hosting-note">الخادم يعمل على جهازك فقط. أوقفه بـ Ctrl+C في الطرفية.</span></span>
 </footer>
 <script src="/static/app.js"></script>
 </body>

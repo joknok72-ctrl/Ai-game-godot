@@ -1,0 +1,135 @@
+# godotai as a website — *your* model server + the chat, published through a Cloudflare Tunnel behind
+# Cloudflare Access. Nothing listens on a public port: cloudflared makes an outbound connection, Cloudflare
+# authenticates every visitor (e-mail one-time PIN by default), the chat re-validates the Access JWT itself.
+#
+#   1. python3 scripts/cloudflare_setup.py … --write-env deploy/cloudflare/.env    (creates Access app, tunnel, DNS)
+#   2. append the model-server lines from deploy/cloudflare/env.example to that .env (or export them in the shell)
+#   3. docker compose -f deploy/cloudflare/compose.yml --profile gpu-base up -d     (or gpu-lora / cpu, see below)
+#   4. open https://$GODOTAI_PUBLIC_HOST/ and sign in with an allowed e-mail
+#
+# Profiles (pick exactly one model server):
+#   gpu-base : vLLM serving the open-weight base (Qwen2.5-Coder-7B-Instruct, Apache-2.0) as "godotai" — needs an NVIDIA GPU
+#   gpu-lora : vLLM serving the base + YOUR LoRA adapter from training/ (mounted at /adapters/godotai) as "godotai"
+#   cpu      : Ollama on CPU (slow; for trying the site without a GPU) — set GODOTAI_MODEL=qwen2.5-coder:7b
+#
+# Variables come from deploy/cloudflare/.env (written by cloudflare_setup.py, mode 0600, git-ignored) and the shell.
+# No credential is written in this file. The Anthropic/OpenAI vendor APIs are not used here at all.
+
+name: godotai
+
+services:
+  chat:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    image: godotai:latest
+    restart: unless-stopped
+    # bind 0.0.0.0 *inside the container network only* — there is deliberately no `ports:` entry;
+    # the only way in is through cloudflared, and every request must carry a valid Cloudflare Access JWT
+    # `${VAR:?…}` makes `docker compose up` refuse to start when a required value is missing from .env, instead of
+    # launching a chat with an empty --public-host / --access-* (the server would refuse the bind anyway; this is earlier)
+    command: >
+      chat --host 0.0.0.0 --port 8765 --games-dir /games
+           --public-host ${GODOTAI_PUBLIC_HOST:?set GODOTAI_PUBLIC_HOST in deploy/cloudflare/.env}
+           --access-team-domain ${GODOTAI_ACCESS_TEAM_DOMAIN:?set GODOTAI_ACCESS_TEAM_DOMAIN in deploy/cloudflare/.env}
+           --access-aud ${GODOTAI_ACCESS_AUD:?set GODOTAI_ACCESS_AUD in deploy/cloudflare/.env}
+    expose:
+      - "8765"
+    environment:
+      GODOTAI_PROVIDER: openai_compat
+      GODOTAI_MODEL: ${GODOTAI_MODEL:-godotai}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://model:8000/v1}
+      GODOTAI_MODEL_KIND: ${GODOTAI_MODEL_KIND:-open_weight_deployment}
+      GODOTAI_ADAPTER: ${GODOTAI_ADAPTER:-}
+      GODOTAI_SERVING: self_hosted
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    volumes:
+      - games:/games
+    healthcheck:
+      # /healthz is the only route that answers without an Access JWT (it returns {"ok": true} and nothing else)
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?run scripts/cloudflare_setup.py --write-env deploy/cloudflare/.env first}  # .env only — never in this file, never in git
+    depends_on:
+      chat:
+        condition: service_started
+
+  # ---- your model server: exactly one profile ---------------------------------------------------------------
+  model:
+    profiles: ["gpu-base"]
+    image: vllm/vllm-openai:latest
+    restart: unless-stopped
+    command: >
+      --model ${GODOTAI_BASE_MODEL:-Qwen/Qwen2.5-Coder-7B-Instruct}
+      --served-model-name godotai
+      --enable-auto-tool-choice --tool-call-parser hermes
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-32768}
+      --host 0.0.0.0 --port 8000
+    expose:
+      - "8000"
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}                  # only needed for gated checkpoints; Qwen2.5-Coder is not gated
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  model-lora:
+    profiles: ["gpu-lora"]
+    image: vllm/vllm-openai:latest
+    restart: unless-stopped
+    # the adapter trained with training/train_qlora.py is served under the same name "godotai";
+    # set GODOTAI_MODEL_KIND=fine_tune and GODOTAI_ADAPTER=/adapters/godotai in .env so the UI labels it honestly
+    command: >
+      --model ${GODOTAI_BASE_MODEL:-Qwen/Qwen2.5-Coder-7B-Instruct}
+      --enable-lora --lora-modules godotai=/adapters/godotai
+      --enable-auto-tool-choice --tool-call-parser hermes
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-32768}
+      --host 0.0.0.0 --port 8000
+    expose:
+      - "8000"
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+      - ${GODOTAI_ADAPTER_DIR:-../../training/output/godotai-lora}:/adapters/godotai:ro
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    networks:
+      default:
+        aliases: [model]                       # the chat still talks to http://model:8000/v1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  ollama:
+    profiles: ["cpu"]
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    expose:
+      - "11434"
+    volumes:
+      - ollama:/root/.ollama
+    # after `up`: docker compose -f deploy/cloudflare/compose.yml exec ollama ollama pull qwen2.5-coder:7b
+    # and in .env: OPENAI_BASE_URL=http://ollama:11434/v1  GODOTAI_MODEL=qwen2.5-coder:7b
+
+volumes:
+  games:
+  hf-cache:
+  ollama:

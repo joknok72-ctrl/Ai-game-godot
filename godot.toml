@@ -35,16 +35,29 @@ sdk_packages = [
 preset_name = "Android"
 
 [agent]
-provider = "anthropic"        # anthropic | openai_compat  (env: GODOTAI_PROVIDER)
-model = "claude-fable-5-1"    # Claude API id verified 2026-09-26 (env: GODOTAI_MODEL)
-effort = "max"                # low | medium | high | xhigh | max — Claude output_config.effort (env: GODOTAI_EFFORT).
-                              # "max" = deepest reasoning, no token-spend constraint (docs, read 2026-09-26). Lower to "high" for cheaper runs.
-max_tokens = 64000            # hard cap on thinking + text per turn; docs recommend a large value at high/xhigh/max
+# ---- YOUR model, on YOUR server (the default) -------------------------------------------------------------------
+# The AI talks to an OpenAI-compatible server that *you* run (vLLM / llama.cpp / Ollama), so no vendor model and no
+# vendor API key is needed at run time. Start one with deploy/cloudflare/compose.yml (GPU: vLLM, CPU: Ollama) or
+# `vllm serve Qwen/Qwen2.5-Coder-7B-Instruct --served-model-name godotai --enable-auto-tool-choice --tool-call-parser hermes`.
+provider = "openai_compat"    # openai_compat | anthropic  (env: GODOTAI_PROVIDER). anthropic = vendor model, opt-in only.
+model = "godotai"             # the *served* name: vLLM --served-model-name / LoRA module name / Ollama tag (env: GODOTAI_MODEL)
+# base_url = "http://127.0.0.1:8000/v1"   # unset → GODOTAI_BASE_URL → OPENAI_BASE_URL → (OPENAI_API_KEY set? api.openai.com) → this URL
+effort = "max"                # low | medium | high | xhigh | max (env: GODOTAI_EFFORT). Forwarded as reasoning_effort only when
+                              # GODOTAI_SEND_REASONING_EFFORT=1 (open-weight servers differ); drives the Claude output_config.effort
+                              # when the vendor provider is chosen.
+max_tokens = 64000            # hard cap on thinking + text per turn
 max_iterations = 60           # hard stop for the act/verify loop
 max_verify_rounds = 4         # how many fix-and-re-verify cycles before giving up
 verify_frames = 120           # frames the game is run headless during verification
 require_plan_approval = true  # human gate between PLAN and ACT (CLI --yes skips it)
-strict_tools = false          # send strict:true on tool schemas (Claude strict tool use); off by default
+strict_tools = false          # send strict:true on tool schemas; off by default
+
+# --- Optional vendor reference model (NOT the product). To measure your model against Claude Fable 5.1 on the same eval
+# tasks, run with these overrides and compare with `python3 -m godotai eval compare`:
+#   GODOTAI_PROVIDER=anthropic GODOTAI_MODEL=claude-fable-5-1 GODOTAI_MODEL_KIND=vendor_api GODOTAI_SERVING=vendor \
+#   GODOTAI_BASE_MODEL=claude-fable-5-1 ANTHROPIC_API_KEY=… python3 -m godotai eval run --task flappy-clone --workspace /tmp/ref --yes
+# The config loader refuses provider = "anthropic" unless [model].kind = "vendor_api" — a vendor model is never
+# presented as yours (godotai/model_identity.py).
 
 # --- Harness controls modelled on how Claude Fable 5.1 is driven (docs read 2026-09-26, see docs/RESEARCH.md).
 # All optional; the values below are the defaults. Env override in parentheses.
@@ -55,7 +68,23 @@ strict_tools = false          # send strict:true on tool schemas (Claude strict 
 # act_effort = "max"          # effort from plan approval onward, e.g. "high" to save tokens in the ACT phase (GODOTAI_ACT_EFFORT)
 # batch_nudge = true          # one-sentence reminder after tool results: batch independent tool calls (GODOTAI_BATCH_NUDGE)
 # long_output_note = true     # tell the model the real max_tokens at xhigh/max so it does not self-truncate (GODOTAI_LONG_OUTPUT_NOTE)
-# progress_updates = false    # beta: short status lines between tool calls (GODOTAI_PROGRESS_UPDATES)
-# turn_scoped_system = false  # beta: nudges as turn-scoped system messages instead of text (GODOTAI_TURN_SCOPED_SYSTEM)
-# task_budget_tokens = 0      # beta: advisory whole-task token budget, minimum 20000; 0/unset = off (GODOTAI_TASK_BUDGET)
+# progress_updates = false    # beta (Claude only): short status lines between tool calls (GODOTAI_PROGRESS_UPDATES)
+# turn_scoped_system = false  # beta (Claude only): nudges as turn-scoped system messages instead of text (GODOTAI_TURN_SCOPED_SYSTEM)
+# task_budget_tokens = 0      # beta (Claude only): advisory whole-task token budget, minimum 20000; 0/unset = off (GODOTAI_TASK_BUDGET)
 # prefix_binding_drop = false # beta debugging aid: drop and report thinking blocks whose prefix changed (GODOTAI_PREFIX_BINDING_DROP)
+
+[model]
+# ---- What the weights behind [agent] ARE — shown verbatim in the chat page and `doctor` (godotai/model_identity.py) --
+# kind: open_weight_deployment = an open-weight model you run privately, unmodified (today's honest state)
+#       fine_tune              = open-weight base + YOUR adapter/weights from training/ (set `adapter`)
+#       from_scratch           = weights pre-trained by you from random init (needs `training_report`; base_model must be "")
+#       vendor_api             = Claude / GPT … behind a vendor API — not yours (serving must be "vendor")
+# Quality is never declared here: "better than model X" exists only as an `eval compare` result on the same tasks.
+name = "godotai"                                # what the page calls your model (env: GODOTAI_MODEL_NAME)
+kind = "open_weight_deployment"                 # (env: GODOTAI_MODEL_KIND)
+base_model = "Qwen/Qwen2.5-Coder-7B-Instruct"   # Apache-2.0 per its model card + LICENSE file, read 2026-09-26 (env: GODOTAI_BASE_MODEL)
+base_license = "Apache-2.0"                     # (env: GODOTAI_BASE_LICENSE)
+adapter = ""                                    # e.g. "godotai-lora" once training/train_qlora.py has produced one (env: GODOTAI_ADAPTER)
+owner = "you"
+serving = "self_hosted"                         # self_hosted | managed (e.g. Workers AI / OpenRouter) | vendor (env: GODOTAI_SERVING)
+reference_model = "claude-fable-5-1"            # default counterpart for `eval compare` (env: GODOTAI_REFERENCE_MODEL)

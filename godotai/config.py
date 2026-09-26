@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .model_identity import ModelIdentity, ModelIdentityError, check_consistency
+
 CONFIG_FILENAME = "godot.toml"
 ENV_CONFIG_PATH = "GODOTAI_CONFIG"
 
@@ -119,10 +121,16 @@ ROUTES = ("direct", "cf_gateway", "workers_ai")
 TASK_BUDGET_MIN = 20_000   # documented minimum for output_config.task_budget.total
 
 
+PRIVATE_BASE_URL = "http://127.0.0.1:8000/v1"   # your own OpenAI-compatible server (vLLM / llama.cpp / Ollama)
+OPENAI_VENDOR_URL = "https://api.openai.com/v1"
+
+
 @dataclass(frozen=True)
 class AgentConfig:
-    provider: str = "anthropic"
-    model: str = "claude-fable-5-1"
+    # Defaults = *your* model on *your* server. A vendor API (Claude/OpenAI) is an explicit opt-in — and must then
+    # be declared as such in [model] (see godotai/model_identity.py); the runtime never requires one.
+    provider: str = "openai_compat"
+    model: str = "godotai"                # served model name (vLLM --served-model-name, Ollama tag, LoRA module name)
     effort: str = "max"
     max_tokens: int = 64000
     max_iterations: int = 60
@@ -130,7 +138,7 @@ class AgentConfig:
     verify_frames: int = 120
     require_plan_approval: bool = True
     strict_tools: bool = False
-    base_url: str | None = None
+    base_url: str | None = None           # explicit endpoint; None → see `endpoint`
     # --- Claude Fable 5.1 harness controls (all documented in docs/RESEARCH.md, read 2026-09-26) ---
     act_effort: str | None = None        # effort from plan approval onward (per-message effort, beta); None = same as effort
     batch_nudge: bool = True             # documented one-sentence nudge after every tool-result message
@@ -160,13 +168,45 @@ class AgentConfig:
         return bool(self.progress_updates or self.turn_scoped_system or self.task_budget_tokens
                     or self.prefix_binding_drop or (self.act_effort and self.act_effort != self.effort))
 
+    @property
+    def endpoint(self) -> str | None:
+        """The base URL the OpenAI-compatible provider will actually talk to (``None`` = derived elsewhere).
+
+        Precedence: ``base_url`` (toml / ``GODOTAI_BASE_URL``) → ``OPENAI_BASE_URL`` → if an ``OPENAI_API_KEY``
+        is present, the OpenAI vendor API (an explicit choice) → otherwise **your private server**
+        (``PRIVATE_BASE_URL``). Cloudflare routes derive their URL in ``make_provider`` unless ``base_url`` is set;
+        the Anthropic provider has its own default.
+        """
+        if self.base_url:
+            return self.base_url
+        if self.provider != "openai_compat" or self.route != "direct":
+            return None
+        env_url = os.environ.get("OPENAI_BASE_URL", "").strip()
+        if env_url:
+            return env_url
+        return OPENAI_VENDOR_URL if os.environ.get("OPENAI_API_KEY") else PRIVATE_BASE_URL
+
+    @property
+    def private_endpoint(self) -> bool:
+        """True when the model is reached at a self-hosted / private URL (not a vendor API, not Cloudflare-managed)."""
+        url = self.endpoint
+        return bool(url) and self.route == "direct" and self.provider == "openai_compat" and "api.openai.com" not in url
+
 
 @dataclass(frozen=True)
 class Config:
     engine: EngineConfig = field(default_factory=EngineConfig)
     android: AndroidConfig = field(default_factory=AndroidConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    model: ModelIdentity = field(default_factory=ModelIdentity)
     path: Path | None = None
+
+    def __post_init__(self) -> None:
+        # The one lie this project must never tell: a vendor model presented as "your" model (or the reverse).
+        try:
+            check_consistency(self.model, self.agent.provider, self.agent.model, self.agent.endpoint, self.agent.route)
+        except ModelIdentityError as exc:
+            raise ConfigError(str(exc)) from exc
 
     @property
     def root(self) -> Path:
@@ -195,6 +235,7 @@ def find_config_file(start: Path | None = None) -> Path | None:
 def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
     agent = data.setdefault("agent", {})
     engine = data.setdefault("engine", {})
+    model = data.setdefault("model", {})
     mapping = {
         "GODOTAI_PROVIDER": (agent, "provider"),
         "GODOTAI_MODEL": (agent, "model"),
@@ -204,6 +245,14 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         "GODOTAI_ROUTE": (agent, "route"),
         "GODOTAI_ENGINE_VERSION": (engine, "version"),
         "GODOTAI_ENGINE_RELEASE": (engine, "release"),
+        # identity of the weights behind [agent] (see godotai/model_identity.py)
+        "GODOTAI_MODEL_NAME": (model, "name"),
+        "GODOTAI_MODEL_KIND": (model, "kind"),
+        "GODOTAI_BASE_MODEL": (model, "base_model"),
+        "GODOTAI_BASE_LICENSE": (model, "base_license"),
+        "GODOTAI_ADAPTER": (model, "adapter"),
+        "GODOTAI_SERVING": (model, "serving"),
+        "GODOTAI_REFERENCE_MODEL": (model, "reference_model"),
     }
     for env_name, (section, key) in mapping.items():
         value = os.environ.get(env_name)
@@ -245,17 +294,23 @@ def load_config(path: Path | None = None) -> Config:
     engine_d = dict(data.get("engine", {}))
     android_d = dict(data.get("android", {}))
     agent_d = dict(data.get("agent", {}))
+    model_d = dict(data.get("model", {}))
     if "sdk_packages" in android_d:
         android_d["sdk_packages"] = tuple(android_d["sdk_packages"])
+    if agent_d.get("base_url") == "":            # "" in toml/env = "use the provider default", same as unset
+        agent_d["base_url"] = None
     try:
         return Config(
             engine=EngineConfig(**engine_d),
             android=AndroidConfig(**android_d),
             agent=AgentConfig(**agent_d),
+            model=ModelIdentity(**model_d),
             path=cfg_path,
         )
     except TypeError as exc:
         raise ConfigError(f"unknown key in {cfg_path}: {exc}") from exc
+    except ModelIdentityError as exc:
+        raise ConfigError(f"{cfg_path}: {exc}") from exc
 
 
 # --------------------------------------------------------------------------

@@ -1,9 +1,10 @@
 """Provider abstraction — the agent loop is model-agnostic.
 
-Two implementations ship: :mod:`anthropic` (Claude Messages API, the default,
-tuned for Claude Fable 5.1) and :mod:`openai_compat` (any OpenAI-compatible
-chat-completions endpoint: OpenAI, OpenRouter, vLLM, Ollama, llama.cpp …), so
-the same specialised agent can run on an open-weight model when preferred.
+Two implementations ship: :mod:`openai_compat` (the default — *your own* model
+server speaking the OpenAI chat-completions dialect: vLLM, Ollama, llama.cpp …, or
+any hosted OpenAI-compatible endpoint) and :mod:`anthropic` (Claude Messages API,
+an explicit opt-in used as the *reference* model for ``eval compare``; it must be
+declared as ``[model].kind = "vendor_api"`` — it is never presented as your model).
 """
 from __future__ import annotations
 

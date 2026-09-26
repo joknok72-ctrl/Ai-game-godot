@@ -33,6 +33,16 @@ button, input, textarea { font: inherit; color: inherit; }
 .setup pre { direction: ltr; text-align: left; background: #0b0e14; padding: .6rem .8rem; border-radius: 8px; overflow: auto; font-family: var(--mono); font-size: .82rem; margin: .4rem 0; white-space: pre-wrap; }
 .setup .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
 
+.identity { margin: .8rem 1.2rem 0; padding: .7rem 1.1rem; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); font-size: .88rem; }
+.identity-head { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+.identity .badge { font-size: .72rem; padding: .1rem .55rem; border-radius: 999px; background: #0b0e14; border: 1px solid var(--line); color: var(--dim); }
+.identity .badge.ok { border-color: #1d5c34; color: #9ad5ab; } .identity .badge.warn { border-color: #6b4b12; color: #f3c775; } .identity .badge.bad { border-color: #7a2323; color: #f0a3a3; }
+.identity code { font-family: var(--mono); font-size: .8rem; background: #0b0e14; padding: 0 .3rem; border-radius: 4px; direction: ltr; unicode-bidi: embed; }
+
+.quick { padding: .6rem 1rem 0; border-top: 1px solid var(--line); font-size: .85rem; }
+.quick-row { display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .4rem; }
+.quick-btn { font-size: .8rem; padding: .3rem .6rem; }
+
 .layout { display: grid; grid-template-columns: 280px 1fr; gap: 1rem; padding: 1rem 1.2rem; flex: 1; min-height: 0; }
 .side { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: .9rem; display: flex; flex-direction: column; gap: .7rem; }
 .projects { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .3rem; max-height: 45vh; overflow: auto; }

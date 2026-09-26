@@ -8,11 +8,43 @@ REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from godotai.config import Config, load_config  # noqa: E402
+from godotai.config import AgentConfig, Config, load_config  # noqa: E402
+from godotai.model_identity import ModelIdentity  # noqa: E402
+
+# Hosted-model env that must not leak into tests of the *private* default (your own server, no vendor key).
+PRIVATE_ENV = {"OPENAI_API_KEY": "", "OPENAI_BASE_URL": "", "GODOTAI_BASE_URL": "", "GODOTAI_PROVIDER": "",
+               "GODOTAI_MODEL": "", "GODOTAI_ROUTE": "", "GODOTAI_SKIP_MODEL_PROBE": ""}
 
 
 def repo_config() -> Config:
     return load_config(REPO / "godot.toml")
+
+
+def anthropic_agent(**overrides) -> AgentConfig:
+    """The repo's agent settings pointed at Claude — the explicit vendor opt-in used by the Anthropic tests."""
+    from dataclasses import replace
+    overrides.setdefault("base_url", None)
+    return replace(repo_config().agent, provider="anthropic", model="claude-fable-5-1", **overrides)
+
+
+def vendor_identity(model: str = "claude-fable-5-1") -> ModelIdentity:
+    return ModelIdentity(name=model, kind="vendor_api", base_model=model, base_license="proprietary",
+                         owner="the vendor", serving="vendor", adapter="")
+
+
+def vendor_config(**agent_overrides) -> Config:
+    """Repo config with Claude as the (honestly labelled) vendor model — what a user who opts in would write."""
+    from dataclasses import replace
+    cfg = repo_config()
+    return replace(cfg, agent=anthropic_agent(**agent_overrides), model=vendor_identity())
+
+
+def fake_probe(reachable: bool = True, models: tuple[str, ...] = ("godotai",), authorized: bool = True):
+    """An injectable stand-in for status.probe_openai_endpoint — never touches the network."""
+    def probe(base_url: str) -> dict:
+        return {"reachable": reachable, "authorized": authorized, "models": list(models),
+                "error": None if reachable else "connection refused"}
+    return probe
 
 
 def valid_plan(cfg: Config) -> dict:
